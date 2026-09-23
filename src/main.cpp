@@ -3,7 +3,7 @@
 /*    Module:       main.cpp                                                  */
 /*    Author:       rohanjoshi                                                */
 /*    Created:      9/22/2026, 6:03:39 PM                                     */
-/*    Description:  V5 project                                                */
+/*    Description:  6-Motor Arcade Drive                                     */
 /*                                                                            */
 /*----------------------------------------------------------------------------*/
 
@@ -14,79 +14,157 @@ using namespace vex;
 // A global instance of competition
 competition Competition;
 
-// define your global instances of motors and other devices here
+// Controller
+controller Controller1 = controller(primary);
+
+// Left side
+motor leftMotor1 = motor(PORT1, ratio6_1, false);   // 11W
+motor leftMotor2 = motor(PORT2, ratio6_1, false);   // 11W
+motor leftMotor3 = motor(PORT3, false);             // 5.5W
+
+// Right side
+motor rightMotor1 = motor(PORT4, ratio6_1, true);   // 11W
+motor rightMotor2 = motor(PORT5, ratio6_1, true);   // 11W
+motor rightMotor3 = motor(PORT6, true);             // 5.5W
+
+// Motor groups
+motor_group leftDrive = motor_group(leftMotor1, leftMotor2, leftMotor3);
+motor_group rightDrive = motor_group(rightMotor1, rightMotor2, rightMotor3);
+
+// PID function
+void drivePID(double targetMotorDeg) {
+  double kP = 0.1;
+  double kI = 0.0004;
+  double kD = 0.6;
+
+  double error = 0;
+  double prevError = 0;
+  double integral = 0;
+  double derivative = 0;
+
+  const int LOOP_TIME = 20; // ms
+  const int TIMEOUT = 2000; // ms
+  int elapsed = 0;
+
+  leftMotor1.setPosition(0, deg);
+  leftMotor2.setPosition(0, deg);
+  leftMotor3.setPosition(0, deg);
+  rightMotor1.setPosition(0, deg);
+  rightMotor2.setPosition(0, deg);
+  rightMotor3.setPosition(0, deg);
+
+  while (elapsed < TIMEOUT) {
+
+    double leftPos =
+      (leftMotor1.position(deg) +
+       leftMotor2.position(deg) +
+       leftMotor3.position(deg)) / 3.0;
+
+    double rightPos =
+      (rightMotor1.position(deg) +
+       rightMotor2.position(deg) +
+       rightMotor3.position(deg)) / 3.0;
+
+    double avgPos = (leftPos + rightPos) / 2.0;
+
+    error = targetMotorDeg - avgPos;
+
+    if (fabs(error) < 2) break;
+
+    if (fabs(error) < 50) {
+      integral += error;
+    } else {
+      integral = 0;
+    }
+
+    if (integral > 3000) integral = 3000;
+    if (integral < -3000) integral = -3000;
+
+    derivative = error - prevError;
+    prevError = error;
+
+    double power =
+      (kP * error) +
+      (kI * integral) +
+      (kD * derivative);
+
+    if (power > 100) power = 100;
+    if (power < -100) power = -100;
+
+    leftDrive.spin(fwd, power, pct);
+    rightDrive.spin(fwd, power, pct);
+
+    wait(LOOP_TIME, msec);
+    elapsed += LOOP_TIME;
+  }
+
+  leftDrive.stop(hold);
+  rightDrive.stop(hold);
+}
+
+// Arcade drive function
+void arcadeDrive() {
+  int throttle = Controller1.Axis3.position();
+  int turn = Controller1.Axis1.position();
+
+  int leftPower = throttle + turn;
+  int rightPower = throttle - turn;
+
+  // Limit the calculated values to the motor's valid range
+  if (leftPower > 100)
+    leftPower = 100;
+
+  if (leftPower < -100)
+    leftPower = -100;
+
+  if (rightPower > 100)
+    rightPower = 100;
+
+  if (rightPower < -100)
+    rightPower = -100;
+
+  leftDrive.spin(forward, leftPower, percent);
+  rightDrive.spin(forward, rightPower, percent);
+}
 
 /*---------------------------------------------------------------------------*/
 /*                          Pre-Autonomous Functions                         */
-/*                                                                           */
-/*  You may want to perform some actions before the competition starts.      */
-/*  Do them in the following function.  You must return from this function   */
-/*  or the autonomous and usercontrol tasks will not be started.  This       */
-/*  function is only called once after the V5 has been powered on and        */
-/*  not every time that the robot is disabled.                               */
 /*---------------------------------------------------------------------------*/
 
 void pre_auton(void) {
-
-  // All activities that occur before the competition starts
-  // Example: clearing encoders, setting servo positions, ...
 }
 
 /*---------------------------------------------------------------------------*/
-/*                                                                           */
 /*                              Autonomous Task                              */
-/*                                                                           */
-/*  This task is used to control your robot during the autonomous phase of   */
-/*  a VEX Competition.                                                       */
-/*                                                                           */
-/*  You must modify the code to add your own robot specific commands here.   */
 /*---------------------------------------------------------------------------*/
 
 void autonomous(void) {
-  // ..........................................................................
-  // Insert autonomous user code here.
-  // ..........................................................................
 }
 
 /*---------------------------------------------------------------------------*/
-/*                                                                           */
 /*                              User Control Task                            */
-/*                                                                           */
-/*  This task is used to control your robot during the user control phase of */
-/*  a VEX Competition.                                                       */
-/*                                                                           */
-/*  You must modify the code to add your own robot specific commands here.   */
 /*---------------------------------------------------------------------------*/
 
 void usercontrol(void) {
-  // User control code here, inside the loop
+
   while (1) {
-    // This is the main execution loop for the user control program.
-    // Each time through the loop your program should update motor + servo
-    // values based on feedback from the joysticks.
+    arcadeDrive();
 
-    // ........................................................................
-    // Insert user code here. This is where you use the joystick values to
-    // update your motors, etc.
-    // ........................................................................
-
-    wait(20, msec); // Sleep the task for a short amount of time to
-                    // prevent wasted resources.
+    wait(20, msec);
   }
 }
 
-//
-// Main will set up the competition functions and callbacks.
-//
+/*---------------------------------------------------------------------------*/
+/*                                Main                                        */
+/*---------------------------------------------------------------------------*/
+
 int main() {
-  // Set up callbacks for autonomous and driver control periods.
+
   Competition.autonomous(autonomous);
   Competition.drivercontrol(usercontrol);
 
-  // Run the pre-autonomous function.
   pre_auton();
 
-  // Prevent main from exiting with an infinite loop.
   while (true) {
     wait(100, msec);
   }
