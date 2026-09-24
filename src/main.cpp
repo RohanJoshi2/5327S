@@ -18,7 +18,7 @@ competition Competition;
 controller Controller1 = controller(primary);
 
 // Misc Motors
-motor intakeMotor = motor(POR11, false);
+motor intakeMotor = motor(PORT11, false);
 motor clawMotor = motor(PORT7, false);
 motor clawLiftMotor = motor(PORT15, false);
 
@@ -74,11 +74,12 @@ void clawLift() {
   static bool buttonWasPressed = false;
   bool buttonPressed = Controller1.ButtonA.pressing();
   if (buttonPressed && !buttonWasPressed) {
+    clawLiftMotor.setVelocity(100, percent);
     if (clawLiftActive) {
-      clawLiftMotor.spinFor(reverse, 90, degrees, 100, percent);
+      clawLiftMotor.spinFor(reverse, 90, degrees);
       clawLiftActive = false;
     } else {
-      clawLiftMotor.spinFor(forward, 90, degrees, 100, percent);
+      clawLiftMotor.spinFor(forward, 90, degrees);
       clawLiftActive = true;
     }
     clawLiftMotor.stop(hold);
