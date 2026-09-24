@@ -17,19 +17,35 @@ competition Competition;
 // Controller
 controller Controller1 = controller(primary);
 
+// Misc Motors
+motor intakeMotor = motor(PORT9, false);
+motor clawMotor = motor(PORT10, false);
+motor clawLiftMotor = motor(PORT11, false);
+
+// Lift motors
+motor liftLeft = motor(PORT7, true);
+motor liftRight = motor(PORT8, false);
+
 // Left side
-motor leftMotor1 = motor(PORT1, ratio6_1, false);   // 11W
-motor leftMotor2 = motor(PORT2, ratio6_1, false);   // 11W
-motor leftMotor3 = motor(PORT3, false);             // 5.5W
+motor leftMotor1 = motor(PORT1, ratio6_1, true);   // 11W
+motor leftMotor2 = motor(PORT2, ratio6_1, true);   // 11W
+motor leftMotor3 = motor(PORT3, ratio6_1, true);   // 5.5W
 
 // Right side
-motor rightMotor1 = motor(PORT4, ratio6_1, true);   // 11W
-motor rightMotor2 = motor(PORT5, ratio6_1, true);   // 11W
-motor rightMotor3 = motor(PORT6, true);             // 5.5W
+motor rightMotor1 = motor(PORT4, ratio6_1, false);   // 11W
+motor rightMotor2 = motor(PORT5, ratio6_1, false);   // 11W
+motor rightMotor3 = motor(PORT6, ratio6_1, false);   // 5.5W
 
 // Motor groups
+motor_group liftMotors = motor_group(liftLeft, liftRight);
 motor_group leftDrive = motor_group(leftMotor1, leftMotor2, leftMotor3);
 motor_group rightDrive = motor_group(rightMotor1, rightMotor2, rightMotor3);
+
+// Intake
+void intake() {
+  intakeMotor.spin(forward, 100, percent);
+  clawMotor.spin(forward, 100, percent);
+}
 
 // PID function
 void drivePID(double targetMotorDeg) {
