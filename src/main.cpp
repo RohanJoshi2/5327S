@@ -41,10 +41,49 @@ motor_group liftMotors = motor_group(liftLeft, liftRight);
 motor_group leftDrive = motor_group(leftMotor1, leftMotor2, leftMotor3);
 motor_group rightDrive = motor_group(rightMotor1, rightMotor2, rightMotor3);
 
+//
+
 // Intake
 void intake() {
-  intakeMotor.spin(forward, 100, percent);
-  clawMotor.spin(forward, 100, percent);
+  if (Controller1.ButtonR1.pressing()) {
+    intakeMotor.spin(forward, 100, percent);
+    clawMotor.spin(forward, 100, percent);
+  } else if (Controller1.ButtonR2.pressing()) {
+    intakeMotor.spin(reverse, 100, percent);
+    clawMotor.spin(reverse, 100, percent);
+  } else {
+    intakeMotor.stop(hold);
+    clawMotor.stop(hold);
+  }
+}
+
+// Lift
+void lift() {
+  if (Controller1.ButtonL1.pressing()) {
+    liftMotors.spin(forward, 100, percent);
+  } else if (Controller1.ButtonL2.pressing()) {
+    liftMotors.spin(reverse, 100, percent);
+  } else {
+    liftMotors.stop(hold);
+  }
+}
+
+// Claw Lift
+bool clawLiftActive = false;
+void clawLift() {
+  static bool buttonWasPressed = false;
+  bool buttonPressed = Controller1.ButtonA.pressing();
+  if (buttonPressed && !buttonWasPressed) {
+    if (clawLiftActive) {
+      clawLiftMotor.spinFor(reverse, 90, degrees, 100, percent);
+      clawLiftActive = false;
+    } else {
+      clawLiftMotor.spinFor(forward, 90, degrees, 100, percent);
+      clawLiftActive = true;
+    }
+    clawLiftMotor.stop(hold);
+  }
+  buttonWasPressed = buttonPressed;
 }
 
 // PID function
@@ -62,24 +101,24 @@ void drivePID(double targetMotorDeg) {
   const int TIMEOUT = 2000; // ms
   int elapsed = 0;
 
-  leftMotor1.setPosition(0, deg);
-  leftMotor2.setPosition(0, deg);
-  leftMotor3.setPosition(0, deg);
-  rightMotor1.setPosition(0, deg);
-  rightMotor2.setPosition(0, deg);
-  rightMotor3.setPosition(0, deg);
+  leftMotor1.setPosition(0, degrees);
+  leftMotor2.setPosition(0, degrees);
+  leftMotor3.setPosition(0, degrees);
+  rightMotor1.setPosition(0, degrees);
+  rightMotor2.setPosition(0, degrees);
+  rightMotor3.setPosition(0, degrees);
 
   while (elapsed < TIMEOUT) {
 
     double leftPos =
-      (leftMotor1.position(deg) +
-       leftMotor2.position(deg) +
-       leftMotor3.position(deg)) / 3.0;
+      (leftMotor1.position(degrees) +
+       leftMotor2.position(degrees) +
+       leftMotor3.position(degrees)) / 3.0;
 
     double rightPos =
-      (rightMotor1.position(deg) +
-       rightMotor2.position(deg) +
-       rightMotor3.position(deg)) / 3.0;
+      (rightMotor1.position(degrees) +
+       rightMotor2.position(degrees) +
+       rightMotor3.position(degrees)) / 3.0;
 
     double avgPos = (leftPos + rightPos) / 2.0;
 
@@ -165,6 +204,9 @@ void usercontrol(void) {
 
   while (1) {
     arcadeDrive();
+    intake();
+    lift();
+    clawLift();
 
     wait(20, msec);
   }
