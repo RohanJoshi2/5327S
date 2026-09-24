@@ -19,8 +19,8 @@ controller Controller1 = controller(primary);
 
 // Misc Motors
 motor intakeMotor = motor(PORT11, false);
-motor clawMotor = motor(PORT7, false);
-motor clawLiftMotor = motor(PORT15, false);
+motor clawMotor = motor(PORT7, true);
+motor clawLiftMotor = motor(PORT15, true);
 
 // Lift motors
 motor liftLeft = motor(PORT8, false);
@@ -76,10 +76,10 @@ void clawLift() {
   if (buttonPressed && !buttonWasPressed) {
     clawLiftMotor.setVelocity(100, percent);
     if (clawLiftActive) {
-      clawLiftMotor.spinFor(reverse, 90, degrees);
+      clawLiftMotor.spinFor(reverse, 200, degrees);
       clawLiftActive = false;
     } else {
-      clawLiftMotor.spinFor(forward, 90, degrees);
+      clawLiftMotor.spinFor(forward, 200, degrees);
       clawLiftActive = true;
     }
     clawLiftMotor.stop(hold);
@@ -163,8 +163,8 @@ void arcadeDrive() {
   int throttle = Controller1.Axis3.position();
   int turn = Controller1.Axis1.position();
 
-  int leftPower = throttle + turn;
-  int rightPower = throttle - turn;
+  int leftPower = throttle - turn;
+  int rightPower = throttle + turn;
 
   // Limit the calculated values to the motor's valid range
   if (leftPower > 100)
