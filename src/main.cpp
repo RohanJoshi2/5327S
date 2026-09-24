@@ -18,23 +18,23 @@ competition Competition;
 controller Controller1 = controller(primary);
 
 // Misc Motors
-motor intakeMotor = motor(PORT9, false);
-motor clawMotor = motor(PORT10, false);
-motor clawLiftMotor = motor(PORT11, false);
+motor intakeMotor = motor(POR11, false);
+motor clawMotor = motor(PORT7, false);
+motor clawLiftMotor = motor(PORT15, false);
 
 // Lift motors
-motor liftLeft = motor(PORT7, true);
-motor liftRight = motor(PORT8, false);
+motor liftLeft = motor(PORT8, false);
+motor liftRight = motor(PORT9, true);
 
 // Left side
-motor leftMotor1 = motor(PORT1, ratio6_1, true);   // 11W
-motor leftMotor2 = motor(PORT2, ratio6_1, true);   // 11W
-motor leftMotor3 = motor(PORT3, ratio6_1, true);   // 5.5W
+motor leftMotor1 = motor(PORT1, ratio6_1, false);   // 11W
+motor leftMotor2 = motor(PORT2, ratio6_1, false);   // 11W
+motor leftMotor3 = motor(PORT3, ratio6_1, false);   // 5.5W
 
 // Right side
-motor rightMotor1 = motor(PORT4, ratio6_1, false);   // 11W
-motor rightMotor2 = motor(PORT5, ratio6_1, false);   // 11W
-motor rightMotor3 = motor(PORT6, ratio6_1, false);   // 5.5W
+motor rightMotor1 = motor(PORT4, ratio6_1, true);   // 11W
+motor rightMotor2 = motor(PORT5, ratio6_1, true);   // 11W
+motor rightMotor3 = motor(PORT6, ratio6_1, true);   // 5.5W
 
 // Motor groups
 motor_group liftMotors = motor_group(liftLeft, liftRight);
