@@ -160,8 +160,8 @@ void drivePID(double targetMotorDeg) {
 
 // Arcade drive function
 void arcadeDrive() {
-  int throttle = Controller1.Axis3.position();
-  int turn = Controller1.Axis1.position();
+  int throttle = 0.7*Controller1.Axis3.position();
+  int turn = 0.7*Controller1.Axis1.position();
 
   int leftPower = throttle - turn;
   int rightPower = throttle + turn;
