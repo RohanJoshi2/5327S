@@ -225,8 +225,8 @@ void usercontrol(void) {
     previousA = currentA;
 
     arcadeDrive();
-    intake(Controller1.ButtonR1.pressing(), Controller1.ButtonR2.pressing());
-    lift(Controller1.ButtonL1.pressing(), Controller1.ButtonL2.pressing());
+    intake(Controller1.ButtonL1.pressing(), Controller1.ButtonL2.pressing());
+    lift(Controller1.ButtonR1.pressing(), Controller1.ButtonR2.pressing());
 
     wait(20, msec);
   }
