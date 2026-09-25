@@ -141,18 +141,20 @@ void arcadeDrive() {
 
 // PID function
 void drivePID(double targetMotorDeg) {
-  double kP = 0.1;
-  double kI = 0.0004;
-  double kD = 0.6;
+  // Tune ONLY these three values
+  double kP = 0.2;
+  double kI = 0.0001;
+  double kD = 0.015;
 
   double error = 0;
   double prevError = 0;
   double integral = 0;
   double derivative = 0;
 
-  const int LOOP_TIME = 20; // ms
+  const double LOOP_TIME = 20.0; // ms
   const int TIMEOUT = 2000; // ms
   int elapsed = 0;
+  int settledCount = 0;
 
   leftMotor1.setPosition(0, degrees);
   leftMotor2.setPosition(0, degrees);
@@ -162,42 +164,49 @@ void drivePID(double targetMotorDeg) {
   rightMotor3.setPosition(0, degrees);
 
   while (elapsed < TIMEOUT) {
+    double leftPos = (leftMotor1.position(degrees) +
+                      leftMotor2.position(degrees) +
+                      leftMotor3.position(degrees)) / 3.0;
 
-    double leftPos =
-      (leftMotor1.position(degrees) +
-       leftMotor2.position(degrees) +
-       leftMotor3.position(degrees)) / 3.0;
-
-    double rightPos =
-      (rightMotor1.position(degrees) +
-       rightMotor2.position(degrees) +
-       rightMotor3.position(degrees)) / 3.0;
+    double rightPos = (rightMotor1.position(degrees) +
+                       rightMotor2.position(degrees) +
+                       rightMotor3.position(degrees)) / 3.0;
 
     double avgPos = (leftPos + rightPos) / 2.0;
 
     error = targetMotorDeg - avgPos;
 
-    if (fabs(error) < 2) break;
+    // Settling check: must stay within 2 degrees for 5 consecutive loops (100ms)
+    if (fabs(error) < 2.0) {
+      settledCount++;
+    } else {
+      settledCount = 0;
+    }
+    if (settledCount >= 5) break;
 
-    if (fabs(error) < 50) {
+    // Integral accumulation & anti-windup capping
+    if (fabs(error) < 40.0) {
       integral += error;
     } else {
       integral = 0;
     }
-
     if (integral > 3000) integral = 3000;
     if (integral < -3000) integral = -3000;
 
-    derivative = error - prevError;
+    // Time-scaled derivative (error change per second)
+    derivative = (error - prevError) / (LOOP_TIME / 1000.0);
     prevError = error;
 
-    double power =
-      (kP * error) +
-      (kI * integral) +
-      (kD * derivative);
+    double power = (kP * error) + (kI * integral) + (kD * derivative);
 
+    // Power capping
     if (power > 100) power = 100;
     if (power < -100) power = -100;
+
+    // Minimum power deadband to prevent motor stalling/humming
+    if (fabs(power) < 3.0) {
+      power = 0;
+    }
 
     leftDrive.spin(fwd, power, pct);
     rightDrive.spin(fwd, power, pct);
@@ -206,8 +215,9 @@ void drivePID(double targetMotorDeg) {
     elapsed += LOOP_TIME;
   }
 
-  leftDrive.stop(coast);
-  rightDrive.stop(coast);
+  // Passive electromagnetic braking mode (protects motors from thermal strain)
+  leftDrive.stop(brake);
+  rightDrive.stop(brake);
 }
 
 /*---------------------------------------------------------------------------*/
