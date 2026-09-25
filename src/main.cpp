@@ -87,9 +87,9 @@ void clawLiftToggle() {
   clawLiftMotor.setVelocity(100, percent);
 
   if (clawLiftActive) {
-    clawLiftMotor.spinFor(reverse, 200, degrees);
+    clawLiftMotor.spinFor(reverse, 320, degrees);
   } else {
-    clawLiftMotor.spinFor(forward, 200, degrees);
+    clawLiftMotor.spinFor(forward, 300, degrees);
   }
 
   clawLiftActive = !clawLiftActive;
