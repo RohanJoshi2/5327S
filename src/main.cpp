@@ -97,6 +97,22 @@ void clawLiftFor(bool up, bool down, int durationMs) {
   clawLift(false, false);
 }
 
+void turnFor(bool left, bool right, int durationMs) {
+  if (left && !right) {
+    leftDrive.spin(reverse, 100, percent);
+    rightDrive.spin(forward, 100, percent);
+  } else if (right && !left) {
+    leftDrive.spin(forward, 100, percent);
+    rightDrive.spin(reverse, 100, percent);
+  } else {
+    leftDrive.stop(brake);
+    rightDrive.stop(brake);
+  }
+  wait(durationMs, msec);
+  leftDrive.stop(brake);
+  rightDrive.stop(brake);
+}
+
 // bool clawLiftActive = false;
 // void clawLiftToggle() {
 
