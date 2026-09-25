@@ -156,7 +156,10 @@ void arcadeDrive() {
 }
 
 // PID function
-void drivePID(double targetMotorDeg) {
+void drivePID(double inches) {
+  const double wheelCircumference = 2.75 * M_PI;
+  double targetMotorDeg = ((inches / wheelCircumference) * 360.0);
+
   // Tune ONLY these three values
   double kP = 0.2;
   double kI = 0.0001;
@@ -248,6 +251,7 @@ void pre_auton(void) {
 /*---------------------------------------------------------------------------*/
 
 void autonomous(void) {
+  drivePID(12);
 }
 
 /*---------------------------------------------------------------------------*/
