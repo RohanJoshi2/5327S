@@ -20,11 +20,11 @@ controller Controller1 = controller(primary);
 // Misc Motors
 motor intakeMotor = motor(PORT11, false);
 motor clawMotor = motor(PORT7, true);
-motor clawLiftMotor = motor(PORT15, false);
+motor clawLiftMotor = motor(PORT10, false);
 
 // Lift motors
-motor liftLeft = motor(PORT8, false);
-motor liftRight = motor(PORT9, true);
+motor liftLeft = motor(PORT9, true);
+motor liftRight = motor(PORT8, false);
 
 // Left side
 motor leftMotor1 = motor(PORT1, ratio6_1, false);   // 11W
@@ -87,9 +87,9 @@ void clawLiftToggle() {
   clawLiftMotor.setVelocity(100, percent);
 
   if (clawLiftActive) {
-    clawLiftMotor.spinFor(reverse, 325, degrees);
+    clawLiftMotor.spinFor(reverse, 200, degrees);
   } else {
-    clawLiftMotor.spinFor(forward, 325, degrees);
+    clawLiftMotor.spinFor(forward, 200, degrees);
   }
 
   clawLiftActive = !clawLiftActive;
