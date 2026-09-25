@@ -19,8 +19,8 @@ controller Controller1 = controller(primary);
 
 // Misc Motors
 motor intakeMotor = motor(PORT11, false);
-motor clawMotor = motor(PORT7, true);
-motor clawLiftMotor = motor(PORT10, false);
+motor clawMotor = motor(PORT10, true);
+motor clawLiftMotor = motor(PORT17, false);
 
 // Lift motors
 motor liftLeft = motor(PORT9, true);
