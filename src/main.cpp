@@ -81,22 +81,38 @@ void liftFor(bool up, bool down, int durationMs) {
 }
 
 // Claw Lift
-bool clawLiftActive = false;
-void clawLiftToggle() {
-
-  clawLiftMotor.setVelocity(100, percent);
-
-  if (clawLiftActive) {
-    clawLiftMotor.setVelocity(75, percent);
-    clawLiftMotor.spinFor(reverse, 300, degrees);
-    clawLiftMotor.setVelocity(100, percent);
+void clawLift(bool up, bool down) {
+  if (up && !down) {
+    clawLiftMotor.spin(forward, 100, percent);
+  } else if (down && !up) {
+    clawLiftMotor.spin(reverse, 100, percent);
   } else {
-    clawLiftMotor.spinFor(forward, 300, degrees);
+    clawLiftMotor.stop(hold);
   }
-
-  clawLiftActive = !clawLiftActive;
-  clawLiftMotor.stop(hold);
 }
+
+void clawLiftFor(bool up, bool down, int durationMs) {
+  clawLift(up, down);
+  wait(durationMs, msec);
+  clawLift(false, false);
+}
+
+// bool clawLiftActive = false;
+// void clawLiftToggle() {
+
+//   clawLiftMotor.setVelocity(100, percent);
+
+//   if (clawLiftActive) {
+//     clawLiftMotor.setVelocity(75, percent);
+//     clawLiftMotor.spinFor(reverse, 300, degrees);
+//     clawLiftMotor.setVelocity(100, percent);
+//   } else {
+//     clawLiftMotor.spinFor(forward, 300, degrees);
+//   }
+
+//   clawLiftActive = !clawLiftActive;
+//   clawLiftMotor.stop(hold);
+// }
 
 // Arcade drive function
 void arcadeDrive() {
@@ -216,18 +232,18 @@ void usercontrol(void) {
   bool previousA = false;
 
   while (1) {
-    bool currentA = Controller1.ButtonA.pressing();
+    // bool currentA = Controller1.ButtonA.pressing();
 
-    if (currentA && !previousA) {
-      clawLiftToggle();
-    }
+    // if (currentA && !previousA) {
+    //   clawLiftToggle();
+    // }
 
-    previousA = currentA;
+    // previousA = currentA;
 
     arcadeDrive();
     intake(Controller1.ButtonL1.pressing(), Controller1.ButtonL2.pressing());
     lift(Controller1.ButtonR1.pressing(), Controller1.ButtonR2.pressing());
-
+    clawLift(Controller1.ButtonA.pressing(), Controller1.ButtonB.pressing());
     wait(20, msec);
   }
 }
