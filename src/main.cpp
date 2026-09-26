@@ -158,22 +158,27 @@ void arcadeDrive() {
 // PID function
 void drivePID(double inches) {
   const double wheelCircumference = 2.75 * M_PI;
-  double targetMotorDeg = ((inches / wheelCircumference) * 360.0);
+  double targetMotorDeg = 1.09 * ((inches / wheelCircumference) * 360.0);
 
   // Tune ONLY these three values
-  double kP = 0.2;
-  double kI = 0.0001;
-  double kD = 0.015;
+  double kP = 0.08;
+  double kI = 0.001;
+  double kD = 0.0015;
 
   double error = 0;
-  double prevError = 0;
+  double prevPos = 0;
   double integral = 0;
   double derivative = 0;
 
   const double LOOP_TIME = 20.0; // ms
   const int TIMEOUT = 2000; // ms
+  const double MAX_DRIVE_POWER = 70.0;
+  const double MAX_POWER_CHANGE = 2.5; // percentage points per loop
+  const double POWER_FILTER_ALPHA = 0.25;
   int elapsed = 0;
   int settledCount = 0;
+  double previousPower = 0;
+  double filteredPower = 0;
 
   leftMotor1.setPosition(0, degrees);
   leftMotor2.setPosition(0, degrees);
@@ -212,20 +217,32 @@ void drivePID(double inches) {
     if (integral > 3000) integral = 3000;
     if (integral < -3000) integral = -3000;
 
-    // Time-scaled derivative (error change per second)
-    derivative = (error - prevError) / (LOOP_TIME / 1000.0);
-    prevError = error;
+    // Smooth encoder velocity to keep derivative damping from reacting to noise.
+    double measuredVelocity = (avgPos - prevPos) / (LOOP_TIME / 1000.0);
+    derivative += 0.25 * (measuredVelocity - derivative);
+    prevPos = avgPos;
 
-    double power = (kP * error) + (kI * integral) + (kD * derivative);
+    double power = (kP * error) + (kI * integral) - (kD * derivative);
 
     // Power capping
-    if (power > 100) power = 100;
-    if (power < -100) power = -100;
+    if (power > MAX_DRIVE_POWER) power = MAX_DRIVE_POWER;
+    if (power < -MAX_DRIVE_POWER) power = -MAX_DRIVE_POWER;
 
     // Minimum power deadband to prevent motor stalling/humming
     if (fabs(power) < 3.0) {
       power = 0;
     }
+
+    filteredPower += POWER_FILTER_ALPHA * (power - filteredPower);
+    power = filteredPower;
+
+    double powerChange = power - previousPower;
+    if (powerChange > MAX_POWER_CHANGE) {
+      power = previousPower + MAX_POWER_CHANGE;
+    } else if (powerChange < -MAX_POWER_CHANGE) {
+      power = previousPower - MAX_POWER_CHANGE;
+    }
+    previousPower = power;
 
     leftDrive.spin(fwd, power, pct);
     rightDrive.spin(fwd, power, pct);
@@ -251,7 +268,7 @@ void pre_auton(void) {
 /*---------------------------------------------------------------------------*/
 
 void autonomous(void) {
-  drivePID(12);
+  
 }
 
 /*---------------------------------------------------------------------------*/
