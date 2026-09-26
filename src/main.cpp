@@ -113,6 +113,93 @@ void turnFor(bool left, bool right, int durationMs) {
   rightDrive.stop(brake);
 }
 
+// ---- TUNE THESE 3 VALUES ----
+const double TRACK_WIDTH_IN = 11.5;   // distance between left/right wheels (inches)
+const double WHEEL_DIAM_IN  = 2.75;   // matches drivePID wheel diameter
+const double MOTOR_PER_WHEEL = 1.09;  // matches drivePID encoder multiplier
+
+// Convert robot turn degrees -> motor degrees (per side) for turn-in-place
+double turnDegToMotorDeg(double robotDeg) {
+  // each wheel travels an arc whose radius is TRACK_WIDTH/2
+  double arcLen = (robotDeg * M_PI / 180.0) * (TRACK_WIDTH_IN / 2.0); // inches
+
+  double wheelCirc = WHEEL_DIAM_IN * M_PI;                            // inches per wheel rev
+  double wheelRevs = arcLen / wheelCirc;                              // wheel revs
+  double motorRevs = wheelRevs * MOTOR_PER_WHEEL;                     // motor revs
+
+  return motorRevs * 360.0;                                           // motor degrees
+}
+
+void turnClockwise(int deg) {
+  double targetMotorDeg = fabs(turnDegToMotorDeg(deg));
+  if (targetMotorDeg == 0) return;
+
+  const int LOOP_TIME_MS = 10;
+  const int STALL_TIMEOUT_MS = 500;
+  const double STALL_MOVEMENT_DEG = 2.0;
+  int leftStallMs = 0;
+  int rightStallMs = 0;
+  double lastLeftProgress = 0;
+  double lastRightProgress = 0;
+
+  // reset encoders (motor_group can't reset)
+  leftMotor1.setPosition(0, vex::deg);
+  leftMotor2.setPosition(0, vex::deg);
+  leftMotor3.setPosition(0, vex::deg);
+  rightMotor1.setPosition(0, vex::deg);
+  rightMotor2.setPosition(0, vex::deg);
+  rightMotor3.setPosition(0, vex::deg);
+
+  int leftSign = (deg > 0) ? -1 : 1;
+  int rightSign = -leftSign;
+
+  while (true) {
+    double leftPos =
+      (fabs(leftMotor1.position(vex::deg)) +
+       fabs(leftMotor2.position(vex::deg)) +
+       fabs(leftMotor3.position(vex::deg))) / 3.0;
+    double rightPos =
+      (fabs(rightMotor1.position(vex::deg)) +
+       fabs(rightMotor2.position(vex::deg)) +
+       fabs(rightMotor3.position(vex::deg))) / 3.0;
+
+    bool leftDone = leftPos >= targetMotorDeg;
+    bool rightDone = rightPos >= targetMotorDeg;
+    if (leftDone && rightDone) break;
+
+    if (leftDone || leftPos - lastLeftProgress >= STALL_MOVEMENT_DEG) {
+      leftStallMs = 0;
+      lastLeftProgress = leftPos;
+    } else {
+      leftStallMs += LOOP_TIME_MS;
+    }
+    if (rightDone || rightPos - lastRightProgress >= STALL_MOVEMENT_DEG) {
+      rightStallMs = 0;
+      lastRightProgress = rightPos;
+    } else {
+      rightStallMs += LOOP_TIME_MS;
+    }
+    if (leftStallMs >= STALL_TIMEOUT_MS || rightStallMs >= STALL_TIMEOUT_MS) break;
+
+    if (leftDone) {
+      leftDrive.stop(vex::brake);
+    } else {
+      leftDrive.spin(vex::fwd, 50 * leftSign, vex::pct);
+    }
+    if (rightDone) {
+      rightDrive.stop(vex::brake);
+    } else {
+      rightDrive.spin(vex::fwd, 50 * rightSign, vex::pct);
+    }
+
+    wait(LOOP_TIME_MS, vex::msec);
+  }
+
+  leftDrive.stop(vex::brake);
+  rightDrive.stop(vex::brake);
+  wait(100, vex::msec);
+}
+
 // bool clawLiftActive = false;
 // void clawLiftToggle() {
 
@@ -261,6 +348,7 @@ void drivePID(double inches) {
 /*---------------------------------------------------------------------------*/
 
 void pre_auton(void) {
+
 }
 
 /*---------------------------------------------------------------------------*/
@@ -268,7 +356,8 @@ void pre_auton(void) {
 /*---------------------------------------------------------------------------*/
 
 void autonomous(void) {
-  
+  drivePID(10);
+  turnClockwise(-90);
 }
 
 /*---------------------------------------------------------------------------*/
