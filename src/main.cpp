@@ -3,13 +3,16 @@
 /*    Module:       main.cpp                                                  */
 /*    Author:       rohanjoshi                                                */
 /*    Created:      9/22/2026, 6:03:39 PM                                     */
-/*    Description:  6-Motor Arcade Drive                                     */
+/*    Description:  6-Motor Arcade Drive + Odometry                          */
 /*                                                                            */
 /*----------------------------------------------------------------------------*/
 
 #include "vex.h"
+#include <math.h>
 
 using namespace vex;
+
+brain Brain;
 
 // A global instance of competition
 competition Competition;
@@ -17,10 +20,21 @@ competition Competition;
 // Controller
 controller Controller1 = controller(primary);
 
+// ---- ODOMETRY CONFIG (TUNE / MEASURE THESE) ----
+const double ODOM_WHEEL_DIAM_IN = 2.0;      // tracking wheel diameter (inches)
+const double ODOM_DIST_FROM_CENTER_IN = 5.0; // distance from bot center to each tracking wheel (inches) -- MEASURE
+const bool LEFT_ODOM_REVERSED = false;       // flip if the sensor reads negative when driving forward
+const bool RIGHT_ODOM_REVERSED = false;      // flip if the sensor reads negative when driving forward
+
 // Misc Motors
 motor toggleMotor = motor(PORT10, false);
-digital_out clawPneumatic = digital_out(brain.three_wire_port.a);
+digital_out clawPneumatic = digital_out(Brain.ThreeWirePort.A);
 bool clawPneumaticOpen = false;
+
+// Sensors
+inertial inertialSensor = inertial(PORT11);
+rotation leftOdom = rotation(PORT12, LEFT_ODOM_REVERSED);
+rotation rightOdom = rotation(PORT13, RIGHT_ODOM_REVERSED);
 
 // DR4B motors
 motor DR4BLeft = motor(PORT7, true);
@@ -41,45 +55,129 @@ motor_group DR4BMotors = motor_group(DR4BLeft, DR4BRight);
 motor_group leftDrive = motor_group(leftMotor1, leftMotor2, leftMotor3);
 motor_group rightDrive = motor_group(rightMotor1, rightMotor2, rightMotor3);
 
-//
+/*---------------------------------------------------------------------------*/
+/*                                 Odometry                                  */
+/*---------------------------------------------------------------------------*/
+/*
+ * Frame: +Y = robot's starting forward direction, +X = starting right.
+ * Heading: degrees, 0 = +Y, clockwise positive (matches inertial default).
+ *
+ * Both tracking wheels point the same way as the drive wheels, sit on the same
+ * lateral axis, and are equidistant from the bot center. That means:
+ *   - forward travel of the center = average of the two wheels
+ *   - turning in place cancels out of that average (no position drift)
+ *   - heading change from wheels alone = (right - left) / (2 * distance)
+ */
 
-// Pneumatic controls
-void setClawPneumatic(bool open) {
-  clawPneumaticOpen = open;
+const double ODOM_WHEEL_CIRC_IN = ODOM_WHEEL_DIAM_IN * M_PI;
+const double ODOM_IN_PER_DEG = ODOM_WHEEL_CIRC_IN / 360.0;
+
+// Pose shared between the odometry task and everything else
+vex::mutex odomMutex;
+double odomX = 0;            // inches
+double odomY = 0;            // inches
+double odomHeadingDeg = 0;   // inertial heading (continuous, not wrapped)
+double odomWheelHeadingDeg = 0; // heading estimated from the tracking wheels only
+
+double prevLeftOdomDeg = 0;
+double prevRightOdomDeg = 0;
+double prevHeadingDeg = 0;
+
+// Heading used by the pose: inertial if it is connected, otherwise wheel-derived
+double currentHeadingDeg() {
+  if (inertialSensor.installed()) {
+    return inertialSensor.rotation(degrees);
+  }
+  return odomWheelHeadingDeg;
+}
+
+// Set the robot pose (x, y in inches, heading in degrees)
+void setPose(double x, double y, double headingDeg) {
+  odomMutex.lock();
+  if (inertialSensor.installed()) {
+    inertialSensor.setRotation(headingDeg, degrees);
+  }
+  odomX = x;
+  odomY = y;
+  odomHeadingDeg = headingDeg;
+  odomWheelHeadingDeg = headingDeg;
+  prevLeftOdomDeg = leftOdom.position(degrees);
+  prevRightOdomDeg = rightOdom.position(degrees);
+  prevHeadingDeg = headingDeg;
+  odomMutex.unlock();
+}
+
+// Thread-safe pose getters
+double getX() {
+  odomMutex.lock();
+  double v = odomX;
+  odomMutex.unlock();
+  return v;
+}
+
+double getY() {
+  odomMutex.lock();
+  double v = odomY;
+  odomMutex.unlock();
+  return v;
+}
+
+double getHeading() {
+  odomMutex.lock();
+  double v = odomHeadingDeg;
+  odomMutex.unlock();
+  return v;
+}
+
+double getWheelHeading() {
+  odomMutex.lock();
+  double v = odomWheelHeadingDeg;
+  odomMutex.unlock();
+  return v;
+}
+
+// Background task: integrates tracking wheel + inertial data into a pose
+int odometryLoop() {
+  while (true) {
+    double leftDeg = leftOdom.position(degrees);
+    double rightDeg = rightOdom.position(degrees);
+
+    double dLeftIn = (leftDeg - prevLeftOdomDeg) * ODOM_IN_PER_DEG;
+    double dRightIn = (rightDeg - prevRightOdomDeg) * ODOM_IN_PER_DEG;
+    prevLeftOdomDeg = leftDeg;
+    prevRightOdomDeg = rightDeg;
+
+    // Heading change from the wheels alone (clockwise positive)
+    double dWheelHeadingDeg =
+      ((dRightIn - dLeftIn) / (2.0 * ODOM_DIST_FROM_CENTER_IN)) * 180.0 / M_PI;
+
+    // Forward travel of the bot center over this step
+    double dForwardIn = (dLeftIn + dRightIn) / 2.0;
+
+    odomMutex.lock();
+    odomWheelHeadingDeg += dWheelHeadingDeg;
+
+    double headingDeg = currentHeadingDeg();
+    // Use the average heading over the step for a better arc approximation
+    double avgHeadingRad = ((prevHeadingDeg + headingDeg) / 2.0) * M_PI / 180.0;
+    prevHeadingDeg = headingDeg;
+
+    odomX += dForwardIn * sin(avgHeadingRad);
+    odomY += dForwardIn * cos(avgHeadingRad);
+    odomHeadingDeg = headingDeg;
+    odomMutex.unlock();
+
+    wait(10, msec);
+  }
+  return 0;
+}
+
+/*---------------------------------------------------------------------------*/
+
+// Toggle claw pneumatic
+void toggleClaw() {
+  clawPneumaticOpen = !clawPneumaticOpen;
   clawPneumatic.set(clawPneumaticOpen);
-}
-
-void toggleClawPneumatic() {
-  setClawPneumatic(!clawPneumaticOpen);
-}
-
-// Intake / mechanism toggle
-void intake(bool in, bool out) {
-  if (in && !out) {
-    toggleMotor.spin(forward, 100, percent);
-  } else if (out && !in) {
-    toggleMotor.spin(reverse, 100, percent);
-  } else {
-    toggleMotor.stop(hold);
-  }
-}
-
-void startClaw(bool in) {
-  if (in) {
-    toggleMotor.spin(forward, 100, percent);
-  } else {
-    toggleMotor.spin(reverse, 100, percent);
-  }
-}
-
-void stopClaw() {
-  toggleMotor.stop(hold);
-}
-
-void intakeFor(bool in, bool out, int durationMs) {
-  intake(in, out);
-  wait(durationMs, msec);
-  intake(false, false);
 }
 
 // DR4B
@@ -93,26 +191,43 @@ void DR4B(bool up, bool down) {
   }
 }
 
-void DR4BFor(bool up, bool down, int durationMs) {
-  DR4B(up, down);
+enum direction { UP, DOWN, STOP };
+
+void DR4BFor(direction d, int durationMs) {
+  if (d == UP) {
+    DR4B(true, false);
+  } else if (d == DOWN) {
+    DR4B(false, true);
+  } else {
+    DR4B(false, false);
+  }
   wait(durationMs, msec);
   DR4B(false, false);
 }
 
-void turnFor(bool left, bool right, int durationMs) {
-  if (left && !right) {
-    leftDrive.spin(reverse, 100, percent);
-    rightDrive.spin(forward, 100, percent);
-  } else if (right && !left) {
-    leftDrive.spin(forward, 100, percent);
-    rightDrive.spin(reverse, 100, percent);
-  } else {
-    leftDrive.stop(brake);
-    rightDrive.stop(brake);
-  }
-  wait(durationMs, msec);
-  leftDrive.stop(brake);
-  rightDrive.stop(brake);
+// Arcade drive function
+void arcadeDrive() {
+  int throttle = 0.7*Controller1.Axis3.position();
+  int turn = 0.7*Controller1.Axis1.position();
+
+  int leftPower = throttle - turn;
+  int rightPower = throttle + turn;
+
+  // Limit the calculated values to the motor's valid range
+  if (leftPower > 100)
+    leftPower = 100;
+
+  if (leftPower < -100)
+    leftPower = -100;
+
+  if (rightPower > 100)
+    rightPower = 100;
+
+  if (rightPower < -100)
+    rightPower = -100;
+
+  leftDrive.spin(forward, leftPower, percent);
+  rightDrive.spin(forward, rightPower, percent);
 }
 
 // ---- TUNE THESE 3 VALUES ----
@@ -201,40 +316,24 @@ void turnClockwise(int deg) {
   wait(100, vex::msec);
 }
 
-// Arcade drive function
-void arcadeDrive() {
-  int throttle = 0.7*Controller1.Axis3.position();
-  int turn = 0.7*Controller1.Axis1.position();
-
-  int leftPower = throttle - turn;
-  int rightPower = throttle + turn;
-
-  // Limit the calculated values to the motor's valid range
-  if (leftPower > 100)
-    leftPower = 100;
-
-  if (leftPower < -100)
-    leftPower = -100;
-
-  if (rightPower > 100)
-    rightPower = 100;
-
-  if (rightPower < -100)
-    rightPower = -100;
-
-  leftDrive.spin(forward, leftPower, percent);
-  rightDrive.spin(forward, rightPower, percent);
-}
-
-// PID function
+// PID function (distance measured by odometry, heading held by inertial)
 void drivePID(double inches) {
+  if (inches == 0) return;
+
   const double wheelCircumference = 2.75 * M_PI;
-  double targetMotorDeg = 1.09 * ((inches / wheelCircumference) * 360.0);
+  // Motor degrees per inch of travel. The PID works in "motor degree" units so the
+  // existing kP/kI/kD tuning still applies, but the measurement comes from odometry.
+  const double motorDegPerInch = 1.09 * (360.0 / wheelCircumference);
+  double targetMotorDeg = inches * motorDegPerInch;
 
   // Tune ONLY these three values
   double kP = 0.09;
   double kI = 0.0015;
   double kD = 0.001;
+
+  // Heading hold (power percent per degree of heading error)
+  const double kHeading = 1.2;
+  const double MAX_HEADING_CORRECTION = 15.0;
 
   double error = 0;
   double prevPos = 0;
@@ -251,23 +350,18 @@ void drivePID(double inches) {
   double previousPower = 0;
   double filteredPower = 0;
 
-  leftMotor1.setPosition(0, degrees);
-  leftMotor2.setPosition(0, degrees);
-  leftMotor3.setPosition(0, degrees);
-  rightMotor1.setPosition(0, degrees);
-  rightMotor2.setPosition(0, degrees);
-  rightMotor3.setPosition(0, degrees);
+  // Starting pose: distance is measured along the starting heading
+  double startX = getX();
+  double startY = getY();
+  double startHeadingDeg = getHeading();
+  double startHeadingRad = startHeadingDeg * M_PI / 180.0;
+  double dirX = sin(startHeadingRad);
+  double dirY = cos(startHeadingRad);
 
   while (elapsed < TIMEOUT) {
-    double leftPos = (leftMotor1.position(degrees) +
-                      leftMotor2.position(degrees) +
-                      leftMotor3.position(degrees)) / 3.0;
-
-    double rightPos = (rightMotor1.position(degrees) +
-                       rightMotor2.position(degrees) +
-                       rightMotor3.position(degrees)) / 3.0;
-
-    double avgPos = (leftPos + rightPos) / 2.0;
+    // Signed distance traveled along the starting heading (inches) from odometry
+    double traveledIn = (getX() - startX) * dirX + (getY() - startY) * dirY;
+    double avgPos = traveledIn * motorDegPerInch;
 
     error = targetMotorDeg - avgPos;
 
@@ -288,7 +382,7 @@ void drivePID(double inches) {
     if (integral > 3000) integral = 3000;
     if (integral < -3000) integral = -3000;
 
-    // Smooth encoder velocity to keep derivative damping from reacting to noise.
+    // Smooth velocity to keep derivative damping from reacting to noise.
     double measuredVelocity = (avgPos - prevPos) / (LOOP_TIME / 1000.0);
     derivative += 0.25 * (measuredVelocity - derivative);
     prevPos = avgPos;
@@ -315,8 +409,23 @@ void drivePID(double inches) {
     }
     previousPower = power;
 
-    leftDrive.spin(fwd, power, pct);
-    rightDrive.spin(fwd, power, pct);
+    // Heading correction: positive error = robot is left of target heading
+    double headingError = startHeadingDeg - getHeading();
+    double correction = kHeading * headingError;
+    if (correction > MAX_HEADING_CORRECTION) correction = MAX_HEADING_CORRECTION;
+    if (correction < -MAX_HEADING_CORRECTION) correction = -MAX_HEADING_CORRECTION;
+    // Fade the correction out as power drops so it can't spin the bot at the end
+    correction *= fmin(1.0, fabs(power) / 20.0);
+
+    double leftPower = power + correction;
+    double rightPower = power - correction;
+    if (leftPower > 100) leftPower = 100;
+    if (leftPower < -100) leftPower = -100;
+    if (rightPower > 100) rightPower = 100;
+    if (rightPower < -100) rightPower = -100;
+
+    leftDrive.spin(fwd, leftPower, pct);
+    rightDrive.spin(fwd, rightPower, pct);
 
     wait(LOOP_TIME, msec);
     elapsed += LOOP_TIME;
@@ -332,7 +441,14 @@ void drivePID(double inches) {
 /*---------------------------------------------------------------------------*/
 
 void pre_auton(void) {
-  setClawPneumatic(false);
+  // Calibrate the inertial sensor (keep the robot still)
+  inertialSensor.calibrate();
+  while (inertialSensor.isCalibrating()) {
+    wait(20, msec);
+  }
+
+  // Start the pose at the origin facing +Y
+  setPose(0, 0, 0);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -381,17 +497,15 @@ void autonomous(void) {
 
 void usercontrol(void) {
   bool previousX = false;
-
   while (1) {
     bool currentX = Controller1.ButtonX.pressing();
-
     if (currentX && !previousX) {
-      toggleClawPneumatic();
+      toggleClaw();
     }
     previousX = currentX;
 
     arcadeDrive();
-    DR4BFor(Controller1.ButtonR1.pressing(), Controller1.ButtonR2.pressing(), 100);
+    DR4B(Controller1.ButtonR1.pressing(), Controller1.ButtonR2.pressing());
     wait(20, msec);
   }
 }
@@ -406,6 +520,9 @@ int main() {
   Competition.drivercontrol(usercontrol);
 
   pre_auton();
+
+  // Start odometry after calibration so the pose starts clean
+  task odomTask = task(odometryLoop);
 
   while (true) {
     wait(100, msec);
