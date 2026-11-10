@@ -18,43 +18,62 @@ competition Competition;
 controller Controller1 = controller(primary);
 
 // Misc Motors
-motor intakeMotor = motor(PORT11, false);
-motor clawMotor = motor(PORT10, true);
-motor clawLiftMotor = motor(PORT17, false);
+motor toggleMotor = motor(PORT10, false);
+digital_out clawPneumatic = digital_out(brain.three_wire_port.a);
+bool clawPneumaticOpen = false;
 
-// Lift motors
-motor liftLeft = motor(PORT9, true);
-motor liftRight = motor(PORT8, false);
+// DR4B motors
+motor DR4BLeft = motor(PORT7, true);
+motor DR4BRight = motor(PORT9, false);
 
 // Left side
-motor leftMotor1 = motor(PORT1, ratio6_1, false);   // 11W
-motor leftMotor2 = motor(PORT2, ratio6_1, false);   // 11W
-motor leftMotor3 = motor(PORT3, ratio6_1, false);   // 5.5W
+motor leftMotor1 = motor(PORT4, ratio6_1, true);   // 5.5W
+motor leftMotor2 = motor(PORT5, ratio6_1, false);   // 11W
+motor leftMotor3 = motor(PORT6, ratio6_1, false);   // 11W
 
 // Right side
-motor rightMotor1 = motor(PORT4, ratio6_1, true);   // 11W
-motor rightMotor2 = motor(PORT5, ratio6_1, true);   // 11W
-motor rightMotor3 = motor(PORT6, ratio6_1, true);   // 5.5W
+motor rightMotor1 = motor(PORT1, ratio6_1, false);   // 5.5W
+motor rightMotor2 = motor(PORT2, ratio6_1, true);   // 11W
+motor rightMotor3 = motor(PORT3, ratio6_1, true);   // 11W
 
 // Motor groups
-motor_group liftMotors = motor_group(liftLeft, liftRight);
+motor_group DR4BMotors = motor_group(DR4BLeft, DR4BRight);
 motor_group leftDrive = motor_group(leftMotor1, leftMotor2, leftMotor3);
 motor_group rightDrive = motor_group(rightMotor1, rightMotor2, rightMotor3);
 
 //
 
-// Intake
+// Pneumatic controls
+void setClawPneumatic(bool open) {
+  clawPneumaticOpen = open;
+  clawPneumatic.set(clawPneumaticOpen);
+}
+
+void toggleClawPneumatic() {
+  setClawPneumatic(!clawPneumaticOpen);
+}
+
+// Intake / mechanism toggle
 void intake(bool in, bool out) {
   if (in && !out) {
-    intakeMotor.spin(forward, 100, percent);
-    clawMotor.spin(forward, 100, percent);
+    toggleMotor.spin(forward, 100, percent);
   } else if (out && !in) {
-    intakeMotor.spin(reverse, 100, percent);
-    clawMotor.spin(reverse, 100, percent);
+    toggleMotor.spin(reverse, 100, percent);
   } else {
-    intakeMotor.stop(coast);
-    clawMotor.stop(hold);
+    toggleMotor.stop(hold);
   }
+}
+
+void startClaw(bool in) {
+  if (in) {
+    toggleMotor.spin(forward, 100, percent);
+  } else {
+    toggleMotor.spin(reverse, 100, percent);
+  }
+}
+
+void stopClaw() {
+  toggleMotor.stop(hold);
 }
 
 void intakeFor(bool in, bool out, int durationMs) {
@@ -63,38 +82,21 @@ void intakeFor(bool in, bool out, int durationMs) {
   intake(false, false);
 }
 
-// Lift
-void lift(bool up, bool down) {
+// DR4B
+void DR4B(bool up, bool down) {
   if (up && !down) {
-    liftMotors.spin(forward, 100, percent);
+    DR4BMotors.spin(forward, 100, percent);
   } else if (down && !up) {
-    liftMotors.spin(reverse, 100, percent);
+    DR4BMotors.spin(reverse, 100, percent);
   } else {
-    liftMotors.stop(hold);
+    DR4BMotors.stop(hold);
   }
 }
 
-void liftFor(bool up, bool down, int durationMs) {
-  lift(up, down);
+void DR4BFor(bool up, bool down, int durationMs) {
+  DR4B(up, down);
   wait(durationMs, msec);
-  lift(false, false);
-}
-
-// Claw Lift
-void clawLift(bool up, bool down) {
-  if (up && !down) {
-    clawLiftMotor.spin(forward, 100, percent);
-  } else if (down && !up) {
-    clawLiftMotor.spin(reverse, 100, percent);
-  } else {
-    clawLiftMotor.stop(hold);
-  }
-}
-
-void clawLiftFor(bool up, bool down, int durationMs) {
-  clawLift(up, down);
-  wait(durationMs, msec);
-  clawLift(false, false);
+  DR4B(false, false);
 }
 
 void turnFor(bool left, bool right, int durationMs) {
@@ -117,6 +119,7 @@ void turnFor(bool left, bool right, int durationMs) {
 const double TRACK_WIDTH_IN = 11.5;   // distance between left/right wheels (inches)
 const double WHEEL_DIAM_IN  = 2.75;   // matches drivePID wheel diameter
 const double MOTOR_PER_WHEEL = 1.09;  // matches drivePID encoder multiplier
+const double TURN_RATE_CORRECTION = 0.75; // calibrate from measured turn angle
 
 // Convert robot turn degrees -> motor degrees (per side) for turn-in-place
 double turnDegToMotorDeg(double robotDeg) {
@@ -127,7 +130,7 @@ double turnDegToMotorDeg(double robotDeg) {
   double wheelRevs = arcLen / wheelCirc;                              // wheel revs
   double motorRevs = wheelRevs * MOTOR_PER_WHEEL;                     // motor revs
 
-  return motorRevs * 360.0;                                           // motor degrees
+  return motorRevs * 360.0 * TURN_RATE_CORRECTION;                    // corrected motor degrees
 }
 
 void turnClockwise(int deg) {
@@ -145,8 +148,8 @@ void turnClockwise(int deg) {
   // reset encoders (motor_group can't reset)
   leftMotor1.setPosition(0, vex::deg);
   leftMotor2.setPosition(0, vex::deg);
-  leftMotor3.setPosition(0, vex::deg);
-  rightMotor1.setPosition(0, vex::deg);
+  // leftMotor3.setPosition(0, vex::deg);
+  // rightMotor1.setPosition(0, vex::deg);
   rightMotor2.setPosition(0, vex::deg);
   rightMotor3.setPosition(0, vex::deg);
 
@@ -156,11 +159,9 @@ void turnClockwise(int deg) {
   while (true) {
     double leftPos =
       (fabs(leftMotor1.position(vex::deg)) +
-       fabs(leftMotor2.position(vex::deg)) +
-       fabs(leftMotor3.position(vex::deg))) / 3.0;
+       fabs(leftMotor2.position(vex::deg))) / 3.0;
     double rightPos =
-      (fabs(rightMotor1.position(vex::deg)) +
-       fabs(rightMotor2.position(vex::deg)) +
+      (fabs(rightMotor2.position(vex::deg)) +
        fabs(rightMotor3.position(vex::deg))) / 3.0;
 
     bool leftDone = leftPos >= targetMotorDeg;
@@ -200,23 +201,6 @@ void turnClockwise(int deg) {
   wait(100, vex::msec);
 }
 
-// bool clawLiftActive = false;
-// void clawLiftToggle() {
-
-//   clawLiftMotor.setVelocity(100, percent);
-
-//   if (clawLiftActive) {
-//     clawLiftMotor.setVelocity(75, percent);
-//     clawLiftMotor.spinFor(reverse, 300, degrees);
-//     clawLiftMotor.setVelocity(100, percent);
-//   } else {
-//     clawLiftMotor.spinFor(forward, 300, degrees);
-//   }
-
-//   clawLiftActive = !clawLiftActive;
-//   clawLiftMotor.stop(hold);
-// }
-
 // Arcade drive function
 void arcadeDrive() {
   int throttle = 0.7*Controller1.Axis3.position();
@@ -248,9 +232,9 @@ void drivePID(double inches) {
   double targetMotorDeg = 1.09 * ((inches / wheelCircumference) * 360.0);
 
   // Tune ONLY these three values
-  double kP = 0.08;
-  double kI = 0.001;
-  double kD = 0.0015;
+  double kP = 0.09;
+  double kI = 0.0015;
+  double kD = 0.001;
 
   double error = 0;
   double prevPos = 0;
@@ -348,7 +332,7 @@ void drivePID(double inches) {
 /*---------------------------------------------------------------------------*/
 
 void pre_auton(void) {
-
+  setClawPneumatic(false);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -356,8 +340,39 @@ void pre_auton(void) {
 /*---------------------------------------------------------------------------*/
 
 void autonomous(void) {
-  drivePID(10);
-  turnClockwise(-90);
+  // Tuning
+  // drivePID(12);
+
+  // Toggle auton
+  // startClaw(false);
+  // drivePID(10);
+  // clawLiftFor(true, false, 425);
+  // leftDrive.spin (reverse, 100, percent);
+  // rightDrive.spin(reverse, 100, percent);
+  // wait(340, msec);
+  // leftDrive.stop(coast);
+  // rightDrive.stop(coast);
+  // drivePID(10);
+  // stopClaw();
+
+  //Side auton
+  // startClaw(true);
+  // drivePID(8);
+  // clawLiftFor(true, false, 475);
+  // leftDrive.spin(reverse, 100, percent);
+  // rightDrive.spin(reverse, 100, percent);
+  // wait(300, msec);
+  // leftDrive.stop(coast);
+  // rightDrive.stop(coast);
+  // drivePID(11);
+  // clawLiftFor(false, true, 230);
+  // turnClockwise(90);
+  // drivePID(-6);
+  // stopClaw();
+  // startClaw(false);
+  // wait(200, msec);
+  // stopClaw();
+  // wait(200, msec);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -365,21 +380,18 @@ void autonomous(void) {
 /*---------------------------------------------------------------------------*/
 
 void usercontrol(void) {
-  bool previousA = false;
+  bool previousX = false;
 
   while (1) {
-    // bool currentA = Controller1.ButtonA.pressing();
+    bool currentX = Controller1.ButtonX.pressing();
 
-    // if (currentA && !previousA) {
-    //   clawLiftToggle();
-    // }
-
-    // previousA = currentA;
+    if (currentX && !previousX) {
+      toggleClawPneumatic();
+    }
+    previousX = currentX;
 
     arcadeDrive();
-    intake(Controller1.ButtonL1.pressing(), Controller1.ButtonL2.pressing());
-    lift(Controller1.ButtonR1.pressing(), Controller1.ButtonR2.pressing());
-    clawLift(Controller1.ButtonA.pressing(), Controller1.ButtonB.pressing());
+    DR4BFor(Controller1.ButtonR1.pressing(), Controller1.ButtonR2.pressing(), 100);
     wait(20, msec);
   }
 }
