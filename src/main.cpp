@@ -446,6 +446,7 @@ void pre_auton(void) {
   while (inertialSensor.isCalibrating()) {
     wait(20, msec);
   }
+  clawPneumatic.set(false);
 
   // Start the pose at the origin facing +Y
   setPose(0, 0, 0);
@@ -456,39 +457,7 @@ void pre_auton(void) {
 /*---------------------------------------------------------------------------*/
 
 void autonomous(void) {
-  // Tuning
-  // drivePID(12);
-
-  // Toggle auton
-  // startClaw(false);
-  // drivePID(10);
-  // clawLiftFor(true, false, 425);
-  // leftDrive.spin (reverse, 100, percent);
-  // rightDrive.spin(reverse, 100, percent);
-  // wait(340, msec);
-  // leftDrive.stop(coast);
-  // rightDrive.stop(coast);
-  // drivePID(10);
-  // stopClaw();
-
-  //Side auton
-  // startClaw(true);
-  // drivePID(8);
-  // clawLiftFor(true, false, 475);
-  // leftDrive.spin(reverse, 100, percent);
-  // rightDrive.spin(reverse, 100, percent);
-  // wait(300, msec);
-  // leftDrive.stop(coast);
-  // rightDrive.stop(coast);
-  // drivePID(11);
-  // clawLiftFor(false, true, 230);
-  // turnClockwise(90);
-  // drivePID(-6);
-  // stopClaw();
-  // startClaw(false);
-  // wait(200, msec);
-  // stopClaw();
-  // wait(200, msec);
+  drivePID(12);
 }
 
 /*---------------------------------------------------------------------------*/
