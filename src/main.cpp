@@ -575,9 +575,9 @@ void captureLevel() {
 
 // How far the bot is tilted from level, in any direction (degrees)
 double tiltDeg() {
-  double roll = wrapDeg(inertialSensor.orientation(roll, degrees) - levelRollDeg);
-  double pitch = wrapDeg(inertialSensor.orientation(pitch, degrees) - levelPitchDeg);
-  return sqrt(roll * roll + pitch * pitch);
+  double rollDelta = wrapDeg(inertialSensor.orientation(roll, degrees) - levelRollDeg);
+  double pitchDelta = wrapDeg(inertialSensor.orientation(pitch, degrees) - levelPitchDeg);
+  return sqrt(rollDelta * rollDelta + pitchDelta * pitchDelta);
 }
 
 // Diagnostics from the most recent drivePID call (call showDriveStats() to display them)
