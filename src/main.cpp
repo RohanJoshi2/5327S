@@ -544,6 +544,230 @@ double wrapDeg(double a) {
   return a;
 }
 
+// ---- DRIVE-STRAIGHT TUNING ----
+// While driving, a separate heading PID keeps the bot on its target heading
+// (values are power percent per degree of heading error)
+const double HEADING_KP = 1.2;                   // proportional
+const double HEADING_KI = 1.5;                   // per degree*second; learns a constant veer (uneven weight)
+const double HEADING_KD = 0.06;                  // per degree/second; damps the wobble after a bump or tip
+const double HEADING_MAX_CORRECTION = 20.0;      // max total heading correction (power percent)
+const double HEADING_MAX_INTEGRAL_POWER = 8.0;   // cap on the integral term (power percent)
+const double HEADING_INTEGRAL_WINDOW_DEG = 10.0; // only integrate when heading error is within this
+const double HEADING_SETTLE_TOL_DEG = 1.0;       // a move isn't finished until heading is within this
+
+// Optional head start for a constant veer, in power percent at 100% drive power.
+// + steers right (clockwise) when driving forward, so use + if the bot veers left. 0 = off.
+const double DRIVE_TRIM = 0.0;
+
+// Microtip protection: the acceleration limit tightens as the bot tilts away from level
+const double TIP_START_DEG = 1.5;                // below this tilt: normal acceleration (90 or more = off)
+const double TIP_FULL_DEG = 5.0;                 // at/above this tilt: tightest acceleration limit
+const double TIP_MIN_SLEW_SCALE = 0.35;          // fraction of normal acceleration allowed at full tilt
+
+// Level reference (roll/pitch when the bot sits flat and still), captured in pre_auton
+double levelRollDeg = 0;
+double levelPitchDeg = 0;
+
+void captureLevel() {
+  levelRollDeg = inertialSensor.orientation(roll, degrees);
+  levelPitchDeg = inertialSensor.orientation(pitch, degrees);
+}
+
+// How far the bot is tilted from level, in any direction (degrees)
+double tiltDeg() {
+  double roll = wrapDeg(inertialSensor.orientation(roll, degrees) - levelRollDeg);
+  double pitch = wrapDeg(inertialSensor.orientation(pitch, degrees) - levelPitchDeg);
+  return sqrt(roll * roll + pitch * pitch);
+}
+
+// Diagnostics from the most recent drivePID call (call showDriveStats() to display them)
+double driveMaxHeadingErrorDeg = 0;
+double driveFinalHeadingErrorDeg = 0;
+double driveFinalErrorIn = 0;
+double drivePeakTiltDeg = 0;
+bool driveTimedOut = false;
+
+void showDriveStats() {
+  Brain.Screen.clearScreen();
+  Brain.Screen.setCursor(1, 1);
+  Brain.Screen.print("Max heading err: %.2f deg", driveMaxHeadingErrorDeg);
+  Brain.Screen.setCursor(2, 1);
+  Brain.Screen.print("End heading err: %.2f deg", driveFinalHeadingErrorDeg);
+  Brain.Screen.setCursor(3, 1);
+  Brain.Screen.print("End distance err: %.2f in", driveFinalErrorIn);
+  Brain.Screen.setCursor(4, 1);
+  Brain.Screen.print("Peak tilt: %.2f deg", drivePeakTiltDeg);
+  Brain.Screen.setCursor(5, 1);
+  Brain.Screen.print("Timed out: %s", driveTimedOut ? "yes" : "no");
+}
+
+// PID drive: distance comes from odometry, and a separate heading PID keeps the bot on
+// targetHeadingDeg (field heading, 0 = +Y, clockwise positive) the whole way.
+void drivePIDAtHeading(double inches, double targetHeadingDeg, int timeoutMs = 2000) {
+  if (inches == 0) return;
+
+  const double wheelCircumference = 2.75 * M_PI;
+  // Motor degrees per inch of travel. The PID works in "motor degree" units so the
+  // existing kP/kI/kD tuning still applies, but the measurement comes from odometry.
+  const double motorDegPerInch = 1.09 * (360.0 / wheelCircumference);
+  double targetMotorDeg = inches * motorDegPerInch;
+
+  // Tune ONLY these three values
+  double kP = 0.09;
+  double kI = 0.0015;
+  double kD = 0.001;
+
+  double error = 0;
+  double prevPos = 0;
+  double integral = 0;
+  double derivative = 0;
+
+  const double LOOP_TIME = 20.0; // ms
+  const double MAX_DRIVE_POWER = 70.0;
+  const double MAX_POWER_CHANGE = 2.5; // percentage points per loop
+  const double POWER_FILTER_ALPHA = 0.25;
+  int elapsed = 0;
+  int settledCount = 0;
+  double previousPower = 0;
+  double filteredPower = 0;
+
+  // Heading PID state
+  double headingIntegral = 0;    // degree * seconds
+  double headingDerivative = 0;  // degrees per second (filtered)
+  double prevHeading = getHeading();
+
+  // Distance is measured along the target heading
+  double startX = getX();
+  double startY = getY();
+  double targetHeadingRad = targetHeadingDeg * M_PI / 180.0;
+  double dirX = sin(targetHeadingRad);
+  double dirY = cos(targetHeadingRad);
+
+  // Diagnostics
+  driveMaxHeadingErrorDeg = 0;
+  driveFinalHeadingErrorDeg = 0;
+  driveFinalErrorIn = 0;
+  drivePeakTiltDeg = 0;
+  driveTimedOut = false;
+
+  while (elapsed < timeoutMs) {
+    // Signed distance traveled along the target heading (inches) from odometry
+    double traveledIn = (getX() - startX) * dirX + (getY() - startY) * dirY;
+    double avgPos = traveledIn * motorDegPerInch;
+
+    error = targetMotorDeg - avgPos;
+
+    // Heading error, shortest direction (positive = bot is left of the target heading)
+    double heading = getHeading();
+    double headingError = wrapDeg(targetHeadingDeg - heading);
+    if (fabs(headingError) > driveMaxHeadingErrorDeg) driveMaxHeadingErrorDeg = fabs(headingError);
+
+    // Settling check: distance within 2 degrees AND heading within tolerance,
+    // for 5 consecutive loops (100ms)
+    if (fabs(error) < 2.0 && fabs(headingError) < HEADING_SETTLE_TOL_DEG) {
+      settledCount++;
+    } else {
+      settledCount = 0;
+    }
+    if (settledCount >= 5) break;
+
+    // Integral accumulation & anti-windup capping
+    if (fabs(error) < 40.0) {
+      integral += error;
+    } else {
+      integral = 0;
+    }
+    if (integral > 3000) integral = 3000;
+    if (integral < -3000) integral = -3000;
+
+    // Smooth velocity to keep derivative damping from reacting to noise.
+    double measuredVelocity = (avgPos - prevPos) / (LOOP_TIME / 1000.0);
+    derivative += 0.25 * (measuredVelocity - derivative);
+    prevPos = avgPos;
+
+    double power = (kP * error) + (kI * integral) - (kD * derivative);
+
+    // Power capping
+    if (power > MAX_DRIVE_POWER) power = MAX_DRIVE_POWER;
+    if (power < -MAX_DRIVE_POWER) power = -MAX_DRIVE_POWER;
+
+    // Minimum power deadband to prevent motor stalling/humming
+    if (fabs(power) < 3.0) {
+      power = 0;
+    }
+
+    filteredPower += POWER_FILTER_ALPHA * (power - filteredPower);
+    power = filteredPower;
+
+    // Microtip protection: tighten the acceleration limit while the bot is tilted
+    double tilt = tiltDeg();
+    if (tilt > drivePeakTiltDeg) drivePeakTiltDeg = tilt;
+    double slewScale = 1.0;
+    if (tilt > TIP_START_DEG) {
+      double t = fmin(1.0, (tilt - TIP_START_DEG) / (TIP_FULL_DEG - TIP_START_DEG));
+      slewScale = 1.0 - (1.0 - TIP_MIN_SLEW_SCALE) * t;
+    }
+    double maxPowerChange = MAX_POWER_CHANGE * slewScale;
+
+    double powerChange = power - previousPower;
+    if (powerChange > maxPowerChange) {
+      power = previousPower + maxPowerChange;
+    } else if (powerChange < -maxPowerChange) {
+      power = previousPower - maxPowerChange;
+    }
+    previousPower = power;
+
+    // Heading PID (runs the whole move, including at low power and at the start/end)
+    double headingRate = (heading - prevHeading) / (LOOP_TIME / 1000.0); // degrees per second
+    prevHeading = heading;
+    headingDerivative += 0.3 * (headingRate - headingDerivative);
+
+    if (fabs(headingError) < HEADING_INTEGRAL_WINDOW_DEG) {
+      headingIntegral += headingError * (LOOP_TIME / 1000.0);
+    }
+    double maxHeadingIntegral = HEADING_MAX_INTEGRAL_POWER / HEADING_KP;
+    if (headingIntegral > maxHeadingIntegral) headingIntegral = maxHeadingIntegral;
+    if (headingIntegral < -maxHeadingIntegral) headingIntegral = -maxHeadingIntegral;
+
+    double headingCorrection = (HEADING_KP * headingError) +
+                               (HEADING_KI * headingIntegral) -
+                               (HEADING_KD * headingDerivative);
+    if (headingCorrection > HEADING_MAX_CORRECTION) headingCorrection = HEADING_MAX_CORRECTION;
+    if (headingCorrection < -HEADING_MAX_CORRECTION) headingCorrection = -HEADING_MAX_CORRECTION;
+    headingCorrection += DRIVE_TRIM;
+
+    // Fade the correction out as power drops so it can't spin the bot at the end
+    headingCorrection *= fmin(1.0, fabs(power) / 20.0);
+
+    double leftPower = power + headingCorrection;
+    double rightPower = power - headingCorrection;
+    if (leftPower > 100) leftPower = 100;
+    if (leftPower < -100) leftPower = -100;
+    if (rightPower > 100) rightPower = 100;
+    if (rightPower < -100) rightPower = -100;
+
+    leftDrive.spin(fwd, leftPower, pct);
+    rightDrive.spin(fwd, rightPower, pct);
+
+    wait(LOOP_TIME, msec);
+    elapsed += LOOP_TIME;
+  }
+
+  // Record how the move ended (see showDriveStats)
+  driveTimedOut = (settledCount < 5);
+  driveFinalHeadingErrorDeg = wrapDeg(targetHeadingDeg - getHeading());
+  driveFinalErrorIn = inches - ((getX() - startX) * dirX + (getY() - startY) * dirY);
+
+  // Passive electromagnetic braking mode (protects motors from thermal strain)
+  leftDrive.stop(brake);
+  rightDrive.stop(brake);
+}
+
+// Drive straight along the heading the bot is currently facing
+void drivePID(double inches, int timeoutMs = 2000) {
+  drivePIDAtHeading(inches, getHeading(), timeoutMs);
+}
+
 // Turn in place to an absolute field heading (degrees, 0 = +Y, clockwise positive).
 // Always takes the shortest direction.
 void turnToHeading(double targetHeadingDeg, int timeoutMs = 1500) {
@@ -636,6 +860,9 @@ void pre_auton(void) {
   while (inertialSensor.isCalibrating()) {
     wait(20, msec);
   }
+
+  // Remember what "level" reads so tilt can be measured during moves
+  captureLevel();
 
   // Start the pose at the origin facing +Y
   setPose(0, 0, 0);
