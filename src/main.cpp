@@ -3,7 +3,7 @@
 /*    Module:       main.cpp                                                  */
 /*    Author:       rohanjoshi                                                */
 /*    Created:      9/22/2026, 6:03:39 PM                                     */
-/*    Description:  6-Motor Arcade Drive + Odometry                          */
+/*    Description:  6-Motor Arcade Drive + Single-Wheel Odometry             */
 /*                                                                            */
 /*----------------------------------------------------------------------------*/
 
@@ -21,10 +21,16 @@ competition Competition;
 controller Controller1 = controller(primary);
 
 // ---- ODOMETRY CONFIG (TUNE / MEASURE THESE) ----
-const double ODOM_WHEEL_DIAM_IN = 2.0;      // tracking wheel diameter (inches)
-const double ODOM_DIST_FROM_CENTER_IN = 5.0; // distance from bot center to each tracking wheel (inches) -- MEASURE
-const bool LEFT_ODOM_REVERSED = false;       // flip if the sensor reads negative when driving forward
-const bool RIGHT_ODOM_REVERSED = false;      // flip if the sensor reads negative when driving forward
+const double ODOM_WHEEL_DIAM_IN = 2.0;          // tracking wheel diameter (inches)
+
+// Single tracking wheel (ACTIVE)
+const double ODOM_OFFSET_FROM_CENTER_IN = -5.0; // MEASURE. Signed: + = wheel is RIGHT of bot center, - = LEFT
+const bool ODOM_REVERSED = false;               // flip if the sensor reads negative when driving forward
+
+// Two tracking wheels (DISABLED)
+// const double ODOM_DIST_FROM_CENTER_IN = 5.0; // distance from bot center to each tracking wheel (inches)
+// const bool LEFT_ODOM_REVERSED = false;       // flip if the sensor reads negative when driving forward
+// const bool RIGHT_ODOM_REVERSED = false;      // flip if the sensor reads negative when driving forward
 
 // Misc Motors
 motor toggleMotor = motor(PORT10, false);
@@ -33,8 +39,11 @@ bool clawPneumaticOpen = false;
 
 // Sensors
 inertial inertialSensor = inertial(PORT11);
-rotation leftOdom = rotation(PORT12, LEFT_ODOM_REVERSED);
-rotation rightOdom = rotation(PORT13, RIGHT_ODOM_REVERSED);
+rotation odomWheel = rotation(PORT12, ODOM_REVERSED); // single tracking wheel (ACTIVE)
+
+// Two tracking wheels (DISABLED)
+// rotation leftOdom = rotation(PORT12, LEFT_ODOM_REVERSED);
+// rotation rightOdom = rotation(PORT13, RIGHT_ODOM_REVERSED);
 
 // DR4B motors
 motor DR4BLeft = motor(PORT7, true);
@@ -56,53 +65,40 @@ motor_group leftDrive = motor_group(leftMotor1, leftMotor2, leftMotor3);
 motor_group rightDrive = motor_group(rightMotor1, rightMotor2, rightMotor3);
 
 /*---------------------------------------------------------------------------*/
-/*                                 Odometry                                  */
+/*                      Odometry (single tracking wheel)                     */
 /*---------------------------------------------------------------------------*/
 /*
  * Frame: +Y = robot's starting forward direction, +X = starting right.
  * Heading: degrees, 0 = +Y, clockwise positive (matches inertial default).
  *
- * Both tracking wheels point the same way as the drive wheels, sit on the same
- * lateral axis, and are equidistant from the bot center. That means:
- *   - forward travel of the center = average of the two wheels
- *   - turning in place cancels out of that average (no position drift)
- *   - heading change from wheels alone = (right - left) / (2 * distance)
+ * One tracking wheel points the same way as the drive wheels. It cannot measure
+ * heading by itself, so the inertial sensor provides heading. Because the wheel
+ * is off-center, turning drags it along an arc, so each step removes that arc:
+ *     forward travel of center = wheel travel + offset * heading change (radians)
+ * (offset is + for a wheel right of center, - for left). Turning in place then
+ * adds no position drift, as long as ODOM_OFFSET_FROM_CENTER_IN is accurate.
  */
 
 const double ODOM_WHEEL_CIRC_IN = ODOM_WHEEL_DIAM_IN * M_PI;
 const double ODOM_IN_PER_DEG = ODOM_WHEEL_CIRC_IN / 360.0;
 
 // Pose shared between the odometry task and everything else
-vex::mutex odomMutex;
+mutex odomMutex;
 double odomX = 0;            // inches
 double odomY = 0;            // inches
-double odomHeadingDeg = 0;   // inertial heading (continuous, not wrapped)
-double odomWheelHeadingDeg = 0; // heading estimated from the tracking wheels only
+double odomHeadingDeg = 0;   // inertial rotation (continuous, not wrapped)
 
-double prevLeftOdomDeg = 0;
-double prevRightOdomDeg = 0;
+double prevOdomDeg = 0;
 double prevHeadingDeg = 0;
-
-// Heading used by the pose: inertial if it is connected, otherwise wheel-derived
-double currentHeadingDeg() {
-  if (inertialSensor.installed()) {
-    return inertialSensor.rotation(degrees);
-  }
-  return odomWheelHeadingDeg;
-}
 
 // Set the robot pose (x, y in inches, heading in degrees)
 void setPose(double x, double y, double headingDeg) {
   odomMutex.lock();
-  if (inertialSensor.installed()) {
-    inertialSensor.setRotation(headingDeg, degrees);
-  }
+  inertialSensor.setRotation(headingDeg, degrees);
   odomX = x;
   odomY = y;
   odomHeadingDeg = headingDeg;
-  odomWheelHeadingDeg = headingDeg;
-  prevLeftOdomDeg = leftOdom.position(degrees);
-  prevRightOdomDeg = rightOdom.position(degrees);
+  prevOdomDeg = odomWheel.position(degrees);
   prevHeadingDeg = headingDeg;
   odomMutex.unlock();
 }
@@ -129,48 +125,153 @@ double getHeading() {
   return v;
 }
 
-double getWheelHeading() {
-  odomMutex.lock();
-  double v = odomWheelHeadingDeg;
-  odomMutex.unlock();
-  return v;
-}
-
 // Background task: integrates tracking wheel + inertial data into a pose
 int odometryLoop() {
   while (true) {
-    double leftDeg = leftOdom.position(degrees);
-    double rightDeg = rightOdom.position(degrees);
-
-    double dLeftIn = (leftDeg - prevLeftOdomDeg) * ODOM_IN_PER_DEG;
-    double dRightIn = (rightDeg - prevRightOdomDeg) * ODOM_IN_PER_DEG;
-    prevLeftOdomDeg = leftDeg;
-    prevRightOdomDeg = rightDeg;
-
-    // Heading change from the wheels alone (clockwise positive)
-    double dWheelHeadingDeg =
-      ((dRightIn - dLeftIn) / (2.0 * ODOM_DIST_FROM_CENTER_IN)) * 180.0 / M_PI;
-
-    // Forward travel of the bot center over this step
-    double dForwardIn = (dLeftIn + dRightIn) / 2.0;
-
     odomMutex.lock();
-    odomWheelHeadingDeg += dWheelHeadingDeg;
 
-    double headingDeg = currentHeadingDeg();
+    double wheelDeg = odomWheel.position(degrees);
+    double headingDeg = inertialSensor.rotation(degrees);
+
+    double dWheelIn = (wheelDeg - prevOdomDeg) * ODOM_IN_PER_DEG;
+    double dHeadingRad = (headingDeg - prevHeadingDeg) * M_PI / 180.0;
+
+    // Remove the arc the off-center wheel sweeps while the robot turns
+    double dForwardIn = dWheelIn + ODOM_OFFSET_FROM_CENTER_IN * dHeadingRad;
+
     // Use the average heading over the step for a better arc approximation
     double avgHeadingRad = ((prevHeadingDeg + headingDeg) / 2.0) * M_PI / 180.0;
-    prevHeadingDeg = headingDeg;
 
     odomX += dForwardIn * sin(avgHeadingRad);
     odomY += dForwardIn * cos(avgHeadingRad);
     odomHeadingDeg = headingDeg;
+
+    prevOdomDeg = wheelDeg;
+    prevHeadingDeg = headingDeg;
     odomMutex.unlock();
 
     wait(10, msec);
   }
   return 0;
 }
+
+/*---------------------------------------------------------------------------*/
+/*                  Odometry (two tracking wheels) -- DISABLED               */
+/*---------------------------------------------------------------------------*/
+// Kept for reference. To switch back: uncomment this block and the two-wheel
+// config/sensor lines above, then comment out the single-wheel versions
+// (odomWheel, ODOM_OFFSET_FROM_CENTER_IN, ODOM_REVERSED, and the single-wheel
+// setPose, getX, getY, getHeading, odometryLoop and pose variables).
+//
+// Frame: +Y = robot's starting forward direction, +X = starting right.
+// Heading: degrees, 0 = +Y, clockwise positive (matches inertial default).
+//
+// Both tracking wheels point the same way as the drive wheels, sit on the same
+// lateral axis, and are equidistant from the bot center. That means:
+//   - forward travel of the center = average of the two wheels
+//   - turning in place cancels out of that average (no position drift)
+//   - heading change from wheels alone = (left - right) / (2 * distance)
+//     (clockwise turn: left wheel goes forward, right wheel goes backward)
+//
+// // Pose shared between the odometry task and everything else
+// vex::mutex odomMutex;
+// double odomX = 0;            // inches
+// double odomY = 0;            // inches
+// double odomHeadingDeg = 0;   // inertial heading (continuous, not wrapped)
+// double odomWheelHeadingDeg = 0; // heading estimated from the tracking wheels only
+//
+// double prevLeftOdomDeg = 0;
+// double prevRightOdomDeg = 0;
+// double prevHeadingDeg = 0;
+//
+// // Heading used by the pose: inertial if it is connected, otherwise wheel-derived
+// double currentHeadingDeg() {
+//   if (inertialSensor.installed()) {
+//     return inertialSensor.rotation(degrees);
+//   }
+//   return odomWheelHeadingDeg;
+// }
+//
+// // Set the robot pose (x, y in inches, heading in degrees)
+// void setPose(double x, double y, double headingDeg) {
+//   odomMutex.lock();
+//   if (inertialSensor.installed()) {
+//     inertialSensor.setRotation(headingDeg, degrees);
+//   }
+//   odomX = x;
+//   odomY = y;
+//   odomHeadingDeg = headingDeg;
+//   odomWheelHeadingDeg = headingDeg;
+//   prevLeftOdomDeg = leftOdom.position(degrees);
+//   prevRightOdomDeg = rightOdom.position(degrees);
+//   prevHeadingDeg = headingDeg;
+//   odomMutex.unlock();
+// }
+//
+// // Thread-safe pose getters
+// double getX() {
+//   odomMutex.lock();
+//   double v = odomX;
+//   odomMutex.unlock();
+//   return v;
+// }
+//
+// double getY() {
+//   odomMutex.lock();
+//   double v = odomY;
+//   odomMutex.unlock();
+//   return v;
+// }
+//
+// double getHeading() {
+//   odomMutex.lock();
+//   double v = odomHeadingDeg;
+//   odomMutex.unlock();
+//   return v;
+// }
+//
+// double getWheelHeading() {
+//   odomMutex.lock();
+//   double v = odomWheelHeadingDeg;
+//   odomMutex.unlock();
+//   return v;
+// }
+//
+// // Background task: integrates tracking wheel + inertial data into a pose
+// int odometryLoop() {
+//   while (true) {
+//     double leftDeg = leftOdom.position(degrees);
+//     double rightDeg = rightOdom.position(degrees);
+//
+//     double dLeftIn = (leftDeg - prevLeftOdomDeg) * ODOM_IN_PER_DEG;
+//     double dRightIn = (rightDeg - prevRightOdomDeg) * ODOM_IN_PER_DEG;
+//     prevLeftOdomDeg = leftDeg;
+//     prevRightOdomDeg = rightDeg;
+//
+//     // Heading change from the wheels alone (clockwise positive)
+//     double dWheelHeadingDeg =
+//       ((dLeftIn - dRightIn) / (2.0 * ODOM_DIST_FROM_CENTER_IN)) * 180.0 / M_PI;
+//
+//     // Forward travel of the bot center over this step
+//     double dForwardIn = (dLeftIn + dRightIn) / 2.0;
+//
+//     odomMutex.lock();
+//     odomWheelHeadingDeg += dWheelHeadingDeg;
+//
+//     double headingDeg = currentHeadingDeg();
+//     // Use the average heading over the step for a better arc approximation
+//     double avgHeadingRad = ((prevHeadingDeg + headingDeg) / 2.0) * M_PI / 180.0;
+//     prevHeadingDeg = headingDeg;
+//
+//     odomX += dForwardIn * sin(avgHeadingRad);
+//     odomY += dForwardIn * cos(avgHeadingRad);
+//     odomHeadingDeg = headingDeg;
+//     odomMutex.unlock();
+//
+//     wait(10, msec);
+//   }
+//   return 0;
+// }
 
 /*---------------------------------------------------------------------------*/
 
@@ -436,6 +537,95 @@ void drivePID(double inches) {
   rightDrive.stop(brake);
 }
 
+// Wrap an angle (degrees) into (-180, 180]
+double wrapDeg(double a) {
+  while (a > 180.0) a -= 360.0;
+  while (a <= -180.0) a += 360.0;
+  return a;
+}
+
+// Turn in place to an absolute field heading (degrees, 0 = +Y, clockwise positive).
+// Always takes the shortest direction.
+void turnToHeading(double targetHeadingDeg, int timeoutMs = 1500) {
+  // Tune these (power percent per degree of error)
+  double kP = 0.8;
+  double kI = 0.01;
+  double kD = 0.06;
+
+  const double MAX_TURN_POWER = 70.0;
+  const double MIN_TURN_POWER = 4.0;    // overcomes static friction when close
+  const double SETTLE_TOL_DEG = 1.0;
+  const int SETTLE_LOOPS = 5;           // 50ms inside tolerance
+  const int LOOP_TIME = 10;             // ms
+
+  double integral = 0;
+  double derivative = 0;
+  double prevError = wrapDeg(targetHeadingDeg - getHeading());
+  int elapsed = 0;
+  int settledCount = 0;
+
+  while (elapsed < timeoutMs) {
+    double error = wrapDeg(targetHeadingDeg - getHeading());
+
+    if (fabs(error) < SETTLE_TOL_DEG) {
+      settledCount++;
+    } else {
+      settledCount = 0;
+    }
+    if (settledCount >= SETTLE_LOOPS) break;
+
+    // Integral only near the target, reset when crossing it
+    if (fabs(error) < 10.0) {
+      integral += error;
+    } else {
+      integral = 0;
+    }
+    if ((error > 0) != (prevError > 0)) integral = 0;
+    if (integral > 1000) integral = 1000;
+    if (integral < -1000) integral = -1000;
+
+    // Filtered derivative in degrees per second
+    double rawDerivative = (error - prevError) / (LOOP_TIME / 1000.0);
+    derivative += 0.3 * (rawDerivative - derivative);
+    prevError = error;
+
+    double power = (kP * error) + (kI * integral) + (kD * derivative);
+
+    if (power > MAX_TURN_POWER) power = MAX_TURN_POWER;
+    if (power < -MAX_TURN_POWER) power = -MAX_TURN_POWER;
+    if (fabs(error) > 1.5 && fabs(power) < MIN_TURN_POWER) {
+      power = (power >= 0) ? MIN_TURN_POWER : -MIN_TURN_POWER;
+    }
+
+    // Positive error = need to turn clockwise: left forward, right backward
+    leftDrive.spin(fwd, power, pct);
+    rightDrive.spin(fwd, -power, pct);
+
+    wait(LOOP_TIME, msec);
+    elapsed += LOOP_TIME;
+  }
+
+  leftDrive.stop(brake);
+  rightDrive.stop(brake);
+  wait(50, msec);
+}
+
+// Turn in place so the robot faces the field point (x, y) in inches.
+// reverse = true points the back of the robot at the point instead.
+void turnToPoint(double x, double y, bool reverse = false, int timeoutMs = 1500) {
+  double dx = x - getX();
+  double dy = y - getY();
+
+  // Too close to the point for a meaningful direction
+  if (sqrt(dx * dx + dy * dy) < 0.5) return;
+
+  // atan2(dx, dy): 0 = +Y, clockwise positive (matches the pose heading)
+  double targetDeg = atan2(dx, dy) * 180.0 / M_PI;
+  if (reverse) targetDeg += 180.0;
+
+  turnToHeading(targetDeg, timeoutMs);
+}
+
 /*---------------------------------------------------------------------------*/
 /*                          Pre-Autonomous Functions                         */
 /*---------------------------------------------------------------------------*/
@@ -446,7 +636,6 @@ void pre_auton(void) {
   while (inertialSensor.isCalibrating()) {
     wait(20, msec);
   }
-  clawPneumatic.set(false);
 
   // Start the pose at the origin facing +Y
   setPose(0, 0, 0);
@@ -457,7 +646,41 @@ void pre_auton(void) {
 /*---------------------------------------------------------------------------*/
 
 void autonomous(void) {
-  drivePID(12);
+  // Tuning
+  // drivePID(12);
+  // turnToHeading(90);
+  // turnToPoint(24, 24);
+
+  // Toggle auton
+  // startClaw(false);
+  // drivePID(10);
+  // clawLiftFor(true, false, 425);
+  // leftDrive.spin (reverse, 100, percent);
+  // rightDrive.spin(reverse, 100, percent);
+  // wait(340, msec);
+  // leftDrive.stop(coast);
+  // rightDrive.stop(coast);
+  // drivePID(10);
+  // stopClaw();
+
+  //Side auton
+  // startClaw(true);
+  // drivePID(8);
+  // clawLiftFor(true, false, 475);
+  // leftDrive.spin(reverse, 100, percent);
+  // rightDrive.spin(reverse, 100, percent);
+  // wait(300, msec);
+  // leftDrive.stop(coast);
+  // rightDrive.stop(coast);
+  // drivePID(11);
+  // clawLiftFor(false, true, 230);
+  // turnClockwise(90);
+  // drivePID(-6);
+  // stopClaw();
+  // startClaw(false);
+  // wait(200, msec);
+  // stopClaw();
+  // wait(200, msec);
 }
 
 /*---------------------------------------------------------------------------*/
