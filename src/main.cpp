@@ -25,7 +25,7 @@ const double ODOM_WHEEL_DIAM_IN = 2.0;          // tracking wheel diameter (inch
 
 // Single tracking wheel (ACTIVE)
 const double ODOM_OFFSET_FROM_CENTER_IN = -5.0; // MEASURE. Signed: + = wheel is RIGHT of bot center, - = LEFT
-const bool ODOM_REVERSED = false;               // flip if the sensor reads negative when driving forward
+const bool ODOM_REVERSED = true;               // flip if the sensor reads negative when driving forward
 
 // Two tracking wheels (DISABLED)
 // const double ODOM_DIST_FROM_CENTER_IN = 5.0; // distance from bot center to each tracking wheel (inches)
@@ -38,26 +38,26 @@ digital_out clawPneumatic = digital_out(Brain.ThreeWirePort.A);
 bool clawPneumaticOpen = false;
 
 // Sensors
-inertial inertialSensor = inertial(PORT11);
-rotation odomWheel = rotation(PORT12, ODOM_REVERSED); // single tracking wheel (ACTIVE)
+inertial inertialSensor = inertial(PORT17);
+rotation odomWheel = rotation(PORT7, ODOM_REVERSED); // single tracking wheel (ACTIVE)
 
 // Two tracking wheels (DISABLED)
 // rotation leftOdom = rotation(PORT12, LEFT_ODOM_REVERSED);
 // rotation rightOdom = rotation(PORT13, RIGHT_ODOM_REVERSED);
 
 // DR4B motors
-motor DR4BLeft = motor(PORT7, true);
-motor DR4BRight = motor(PORT9, false);
+motor DR4BLeft = motor(PORT9, false);
+motor DR4BRight = motor(PORT12, true);
 
 // Left side
-motor leftMotor1 = motor(PORT4, ratio6_1, true);   // 5.5W
-motor leftMotor2 = motor(PORT5, ratio6_1, false);   // 11W
-motor leftMotor3 = motor(PORT6, ratio6_1, false);   // 11W
+motor leftMotor1 = motor(PORT4, ratio6_1, false);   // 5.5W
+motor leftMotor2 = motor(PORT5, ratio6_1, true);   // 11W
+motor leftMotor3 = motor(PORT6, ratio6_1, true);   // 11W
 
 // Right side
-motor rightMotor1 = motor(PORT1, ratio6_1, false);   // 5.5W
-motor rightMotor2 = motor(PORT2, ratio6_1, true);   // 11W
-motor rightMotor3 = motor(PORT3, ratio6_1, true);   // 11W
+motor rightMotor1 = motor(PORT1, ratio6_1, true);   // 5.5W
+motor rightMotor2 = motor(PORT2, ratio6_1, false);   // 11W
+motor rightMotor3 = motor(PORT3, ratio6_1, false);   // 11W
 
 // Motor groups
 motor_group DR4BMotors = motor_group(DR4BLeft, DR4BRight);
@@ -80,7 +80,9 @@ motor_group rightDrive = motor_group(rightMotor1, rightMotor2, rightMotor3);
  */
 
 const double ODOM_WHEEL_CIRC_IN = ODOM_WHEEL_DIAM_IN * M_PI;
-const double ODOM_IN_PER_DEG = ODOM_WHEEL_CIRC_IN / 360.0;
+// Empirical correction: a commanded 24 in move measured about 27 in physically.
+const double ODOM_DISTANCE_SCALE = 27.0 / 24.0;
+const double ODOM_IN_PER_DEG = (ODOM_WHEEL_CIRC_IN / 360.0) * ODOM_DISTANCE_SCALE;
 
 // Pose shared between the odometry task and everything else
 mutex odomMutex;
@@ -331,210 +333,67 @@ void arcadeDrive() {
   rightDrive.spin(forward, rightPower, percent);
 }
 
-// ---- TUNE THESE 3 VALUES ----
-const double TRACK_WIDTH_IN = 11.5;   // distance between left/right wheels (inches)
-const double WHEEL_DIAM_IN  = 2.75;   // matches drivePID wheel diameter
-const double MOTOR_PER_WHEEL = 1.09;  // matches drivePID encoder multiplier
-const double TURN_RATE_CORRECTION = 0.75; // calibrate from measured turn angle
-
-// Convert robot turn degrees -> motor degrees (per side) for turn-in-place
-double turnDegToMotorDeg(double robotDeg) {
-  // each wheel travels an arc whose radius is TRACK_WIDTH/2
-  double arcLen = (robotDeg * M_PI / 180.0) * (TRACK_WIDTH_IN / 2.0); // inches
-
-  double wheelCirc = WHEEL_DIAM_IN * M_PI;                            // inches per wheel rev
-  double wheelRevs = arcLen / wheelCirc;                              // wheel revs
-  double motorRevs = wheelRevs * MOTOR_PER_WHEEL;                     // motor revs
-
-  return motorRevs * 360.0 * TURN_RATE_CORRECTION;                    // corrected motor degrees
-}
-
 void turnClockwise(int deg) {
-  double targetMotorDeg = fabs(turnDegToMotorDeg(deg));
-  if (targetMotorDeg == 0) return;
+  if (deg == 0) return;
 
   const int LOOP_TIME_MS = 10;
-  const int STALL_TIMEOUT_MS = 500;
-  const double STALL_MOVEMENT_DEG = 2.0;
-  int leftStallMs = 0;
-  int rightStallMs = 0;
-  double lastLeftProgress = 0;
-  double lastRightProgress = 0;
+  const double LOOP_TIME_SEC = LOOP_TIME_MS / 1000.0;
+  const int TIMEOUT_MS = 1500 + static_cast<int>(fabs(static_cast<double>(deg)) * 10.0);
+  const double KP = 0.8;
+  const double KI = 0.01;
+  const double KD = 0.06;
+  const double MAX_TURN_POWER = 70.0;
+  const double MIN_TURN_POWER = 4.0;
+  const double SETTLE_TOL_DEG = 1.0;
+  const int SETTLE_LOOPS = 5;
 
-  // reset encoders (motor_group can't reset)
-  leftMotor1.setPosition(0, vex::deg);
-  leftMotor2.setPosition(0, vex::deg);
-  // leftMotor3.setPosition(0, vex::deg);
-  // rightMotor1.setPosition(0, vex::deg);
-  rightMotor2.setPosition(0, vex::deg);
-  rightMotor3.setPosition(0, vex::deg);
-
-  int leftSign = (deg > 0) ? -1 : 1;
-  int rightSign = -leftSign;
-
-  while (true) {
-    double leftPos =
-      (fabs(leftMotor1.position(vex::deg)) +
-       fabs(leftMotor2.position(vex::deg))) / 3.0;
-    double rightPos =
-      (fabs(rightMotor2.position(vex::deg)) +
-       fabs(rightMotor3.position(vex::deg))) / 3.0;
-
-    bool leftDone = leftPos >= targetMotorDeg;
-    bool rightDone = rightPos >= targetMotorDeg;
-    if (leftDone && rightDone) break;
-
-    if (leftDone || leftPos - lastLeftProgress >= STALL_MOVEMENT_DEG) {
-      leftStallMs = 0;
-      lastLeftProgress = leftPos;
-    } else {
-      leftStallMs += LOOP_TIME_MS;
-    }
-    if (rightDone || rightPos - lastRightProgress >= STALL_MOVEMENT_DEG) {
-      rightStallMs = 0;
-      lastRightProgress = rightPos;
-    } else {
-      rightStallMs += LOOP_TIME_MS;
-    }
-    if (leftStallMs >= STALL_TIMEOUT_MS || rightStallMs >= STALL_TIMEOUT_MS) break;
-
-    if (leftDone) {
-      leftDrive.stop(vex::brake);
-    } else {
-      leftDrive.spin(vex::fwd, 50 * leftSign, vex::pct);
-    }
-    if (rightDone) {
-      rightDrive.stop(vex::brake);
-    } else {
-      rightDrive.spin(vex::fwd, 50 * rightSign, vex::pct);
-    }
-
-    wait(LOOP_TIME_MS, vex::msec);
-  }
-
-  leftDrive.stop(vex::brake);
-  rightDrive.stop(vex::brake);
-  wait(100, vex::msec);
-}
-
-// PID function (distance measured by odometry, heading held by inertial)
-void drivePID(double inches) {
-  if (inches == 0) return;
-
-  const double wheelCircumference = 2.75 * M_PI;
-  // Motor degrees per inch of travel. The PID works in "motor degree" units so the
-  // existing kP/kI/kD tuning still applies, but the measurement comes from odometry.
-  const double motorDegPerInch = 1.09 * (360.0 / wheelCircumference);
-  double targetMotorDeg = inches * motorDegPerInch;
-
-  // Tune ONLY these three values
-  double kP = 0.09;
-  double kI = 0.0015;
-  double kD = 0.001;
-
-  // Heading hold (power percent per degree of heading error)
-  const double kHeading = 1.2;
-  const double MAX_HEADING_CORRECTION = 15.0;
-
-  double error = 0;
-  double prevPos = 0;
+  const double targetHeading = inertialSensor.rotation(degrees) + deg;
+  double previousHeading = inertialSensor.rotation(degrees);
   double integral = 0;
-  double derivative = 0;
-
-  const double LOOP_TIME = 20.0; // ms
-  const int TIMEOUT = 2000; // ms
-  const double MAX_DRIVE_POWER = 70.0;
-  const double MAX_POWER_CHANGE = 2.5; // percentage points per loop
-  const double POWER_FILTER_ALPHA = 0.25;
-  int elapsed = 0;
+  double filteredRate = 0;
+  int elapsedMs = 0;
   int settledCount = 0;
-  double previousPower = 0;
-  double filteredPower = 0;
 
-  // Starting pose: distance is measured along the starting heading
-  double startX = getX();
-  double startY = getY();
-  double startHeadingDeg = getHeading();
-  double startHeadingRad = startHeadingDeg * M_PI / 180.0;
-  double dirX = sin(startHeadingRad);
-  double dirY = cos(startHeadingRad);
+  while (elapsedMs < TIMEOUT_MS) {
+    double heading = inertialSensor.rotation(degrees);
+    double error = targetHeading - heading;
 
-  while (elapsed < TIMEOUT) {
-    // Signed distance traveled along the starting heading (inches) from odometry
-    double traveledIn = (getX() - startX) * dirX + (getY() - startY) * dirY;
-    double avgPos = traveledIn * motorDegPerInch;
-
-    error = targetMotorDeg - avgPos;
-
-    // Settling check: must stay within 2 degrees for 5 consecutive loops (100ms)
-    if (fabs(error) < 2.0) {
+    if (fabs(error) < SETTLE_TOL_DEG) {
       settledCount++;
     } else {
       settledCount = 0;
     }
-    if (settledCount >= 5) break;
+    if (settledCount >= SETTLE_LOOPS) break;
 
-    // Integral accumulation & anti-windup capping
-    if (fabs(error) < 40.0) {
-      integral += error;
+    if (fabs(error) < 10.0) {
+      integral += error * LOOP_TIME_SEC;
     } else {
       integral = 0;
     }
-    if (integral > 3000) integral = 3000;
-    if (integral < -3000) integral = -3000;
+    if (integral > 100.0) integral = 100.0;
+    if (integral < -100.0) integral = -100.0;
 
-    // Smooth velocity to keep derivative damping from reacting to noise.
-    double measuredVelocity = (avgPos - prevPos) / (LOOP_TIME / 1000.0);
-    derivative += 0.25 * (measuredVelocity - derivative);
-    prevPos = avgPos;
+    double headingRate = (heading - previousHeading) / LOOP_TIME_SEC;
+    previousHeading = heading;
+    filteredRate += 0.3 * (headingRate - filteredRate);
 
-    double power = (kP * error) + (kI * integral) - (kD * derivative);
-
-    // Power capping
-    if (power > MAX_DRIVE_POWER) power = MAX_DRIVE_POWER;
-    if (power < -MAX_DRIVE_POWER) power = -MAX_DRIVE_POWER;
-
-    // Minimum power deadband to prevent motor stalling/humming
-    if (fabs(power) < 3.0) {
-      power = 0;
+    double power = KP * error + KI * integral - KD * filteredRate;
+    if (power > MAX_TURN_POWER) power = MAX_TURN_POWER;
+    if (power < -MAX_TURN_POWER) power = -MAX_TURN_POWER;
+    if (fabs(error) > 1.5 && fabs(power) < MIN_TURN_POWER) {
+      power = error > 0 ? MIN_TURN_POWER : -MIN_TURN_POWER;
     }
 
-    filteredPower += POWER_FILTER_ALPHA * (power - filteredPower);
-    power = filteredPower;
+    leftDrive.spin(fwd, power, pct);
+    rightDrive.spin(fwd, -power, pct);
 
-    double powerChange = power - previousPower;
-    if (powerChange > MAX_POWER_CHANGE) {
-      power = previousPower + MAX_POWER_CHANGE;
-    } else if (powerChange < -MAX_POWER_CHANGE) {
-      power = previousPower - MAX_POWER_CHANGE;
-    }
-    previousPower = power;
-
-    // Heading correction: positive error = robot is left of target heading
-    double headingError = startHeadingDeg - getHeading();
-    double correction = kHeading * headingError;
-    if (correction > MAX_HEADING_CORRECTION) correction = MAX_HEADING_CORRECTION;
-    if (correction < -MAX_HEADING_CORRECTION) correction = -MAX_HEADING_CORRECTION;
-    // Fade the correction out as power drops so it can't spin the bot at the end
-    correction *= fmin(1.0, fabs(power) / 20.0);
-
-    double leftPower = power + correction;
-    double rightPower = power - correction;
-    if (leftPower > 100) leftPower = 100;
-    if (leftPower < -100) leftPower = -100;
-    if (rightPower > 100) rightPower = 100;
-    if (rightPower < -100) rightPower = -100;
-
-    leftDrive.spin(fwd, leftPower, pct);
-    rightDrive.spin(fwd, rightPower, pct);
-
-    wait(LOOP_TIME, msec);
-    elapsed += LOOP_TIME;
+    wait(LOOP_TIME_MS, msec);
+    elapsedMs += LOOP_TIME_MS;
   }
 
-  // Passive electromagnetic braking mode (protects motors from thermal strain)
   leftDrive.stop(brake);
   rightDrive.stop(brake);
+  wait(50, msec);
 }
 
 // Wrap an angle (degrees) into (-180, 180]
@@ -545,26 +404,22 @@ double wrapDeg(double a) {
 }
 
 // ---- DRIVE-STRAIGHT TUNING ----
-// While driving, a separate heading PID keeps the bot on its target heading
-// (values are power percent per degree of heading error)
-const double HEADING_KP = 1.2;                   // proportional
-const double HEADING_KI = 1.5;                   // per degree*second; learns a constant veer (uneven weight)
-const double HEADING_KD = 0.06;                  // per degree/second; damps the wobble after a bump or tip
-const double HEADING_MAX_CORRECTION = 20.0;      // max total heading correction (power percent)
-const double HEADING_MAX_INTEGRAL_POWER = 8.0;   // cap on the integral term (power percent)
-const double HEADING_INTEGRAL_WINDOW_DEG = 10.0; // only integrate when heading error is within this
-const double HEADING_SETTLE_TOL_DEG = 1.0;       // a move isn't finished until heading is within this
+// Drive straight while holding the current heading. This keeps the drive system
+// separate from the turning system instead of targeting a specific absolute heading.
+const double DRIVE_KP = 0.09;
+const double DRIVE_KI = 0.0015;
+const double DRIVE_KD = 0.001;
+const double DRIVE_MAX_POWER = 70.0;
+const double DRIVE_MAX_POWER_CHANGE = 1.0;
+const double DRIVE_POWER_FILTER_ALPHA = 0.25;
 
-// Optional head start for a constant veer, in power percent at 100% drive power.
-// + steers right (clockwise) when driving forward, so use + if the bot veers left. 0 = off.
-const double DRIVE_TRIM = 0.0;
+const double YAW_RATE_THRESHOLD_DPS = 8.0;
+const double LAGGING_SIDE_BOOST_POWER = 0.5;
 
-// Microtip protection: the acceleration limit tightens as the bot tilts away from level
-const double TIP_START_DEG = 1.5;                // below this tilt: normal acceleration (90 or more = off)
-const double TIP_FULL_DEG = 5.0;                 // at/above this tilt: tightest acceleration limit
-const double TIP_MIN_SLEW_SCALE = 0.35;          // fraction of normal acceleration allowed at full tilt
+const double TIP_START_DEG = 1.5;
+const double TIP_FULL_DEG = 5.0;
+const double TIP_MIN_SLEW_SCALE = 0.35;
 
-// Level reference (roll/pitch when the bot sits flat and still), captured in pre_auton
 double levelRollDeg = 0;
 double levelPitchDeg = 0;
 
@@ -573,14 +428,12 @@ void captureLevel() {
   levelPitchDeg = inertialSensor.orientation(pitch, degrees);
 }
 
-// How far the bot is tilted from level, in any direction (degrees)
 double tiltDeg() {
   double rollDelta = wrapDeg(inertialSensor.orientation(roll, degrees) - levelRollDeg);
   double pitchDelta = wrapDeg(inertialSensor.orientation(pitch, degrees) - levelPitchDeg);
   return sqrt(rollDelta * rollDelta + pitchDelta * pitchDelta);
 }
 
-// Diagnostics from the most recent drivePID call (call showDriveStats() to display them)
 double driveMaxHeadingErrorDeg = 0;
 double driveFinalHeadingErrorDeg = 0;
 double driveFinalErrorIn = 0;
@@ -601,77 +454,65 @@ void showDriveStats() {
   Brain.Screen.print("Timed out: %s", driveTimedOut ? "yes" : "no");
 }
 
-// PID drive: distance comes from odometry, and a separate heading PID keeps the bot on
-// targetHeadingDeg (field heading, 0 = +Y, clockwise positive) the whole way.
-void drivePIDAtHeading(double inches, double targetHeadingDeg, int timeoutMs = 2000) {
+// Drive straight along the robot's current heading, without commanding a target heading.
+void drivePID(double inches, int timeoutMs = 3500) {
   if (inches == 0) return;
 
   const double wheelCircumference = 2.75 * M_PI;
-  // Motor degrees per inch of travel. The PID works in "motor degree" units so the
-  // existing kP/kI/kD tuning still applies, but the measurement comes from odometry.
   const double motorDegPerInch = 1.09 * (360.0 / wheelCircumference);
   double targetMotorDeg = inches * motorDegPerInch;
-
-  // Tune ONLY these three values
-  double kP = 0.09;
-  double kI = 0.0015;
-  double kD = 0.001;
 
   double error = 0;
   double prevPos = 0;
   double integral = 0;
   double derivative = 0;
 
-  const double LOOP_TIME = 20.0; // ms
-  const double MAX_DRIVE_POWER = 70.0;
-  const double MAX_POWER_CHANGE = 2.5; // percentage points per loop
-  const double POWER_FILTER_ALPHA = 0.25;
+  const double LOOP_TIME = 20.0;
   int elapsed = 0;
   int settledCount = 0;
   double previousPower = 0;
   double filteredPower = 0;
 
-  // Heading PID state
-  double headingIntegral = 0;    // degree * seconds
-  double headingDerivative = 0;  // degrees per second (filtered)
-  double prevHeading = getHeading();
-
-  // Distance is measured along the target heading
   double startX = getX();
   double startY = getY();
+  double targetHeadingDeg = getHeading();
   double targetHeadingRad = targetHeadingDeg * M_PI / 180.0;
   double dirX = sin(targetHeadingRad);
   double dirY = cos(targetHeadingRad);
 
-  // Diagnostics
   driveMaxHeadingErrorDeg = 0;
   driveFinalHeadingErrorDeg = 0;
   driveFinalErrorIn = 0;
   drivePeakTiltDeg = 0;
   driveTimedOut = false;
+  bool reachedTarget = false;
 
   while (elapsed < timeoutMs) {
-    // Signed distance traveled along the target heading (inches) from odometry
     double traveledIn = (getX() - startX) * dirX + (getY() - startY) * dirY;
     double avgPos = traveledIn * motorDegPerInch;
 
     error = targetMotorDeg - avgPos;
 
-    // Heading error, shortest direction (positive = bot is left of the target heading)
     double heading = getHeading();
     double headingError = wrapDeg(targetHeadingDeg - heading);
     if (fabs(headingError) > driveMaxHeadingErrorDeg) driveMaxHeadingErrorDeg = fabs(headingError);
 
-    // Settling check: distance within 2 degrees AND heading within tolerance,
-    // for 5 consecutive loops (100ms)
-    if (fabs(error) < 2.0 && fabs(headingError) < HEADING_SETTLE_TOL_DEG) {
+    // Stop at the target rather than reversing to correct an overshoot.
+    if ((inches > 0 && error <= 0) || (inches < 0 && error >= 0)) {
+      reachedTarget = true;
+      break;
+    }
+
+    if (fabs(error) < 2.0) {
       settledCount++;
     } else {
       settledCount = 0;
     }
-    if (settledCount >= 5) break;
+    if (settledCount >= 5) {
+      reachedTarget = true;
+      break;
+    }
 
-    // Integral accumulation & anti-windup capping
     if (fabs(error) < 40.0) {
       integral += error;
     } else {
@@ -680,26 +521,18 @@ void drivePIDAtHeading(double inches, double targetHeadingDeg, int timeoutMs = 2
     if (integral > 3000) integral = 3000;
     if (integral < -3000) integral = -3000;
 
-    // Smooth velocity to keep derivative damping from reacting to noise.
     double measuredVelocity = (avgPos - prevPos) / (LOOP_TIME / 1000.0);
     derivative += 0.25 * (measuredVelocity - derivative);
     prevPos = avgPos;
 
-    double power = (kP * error) + (kI * integral) - (kD * derivative);
+    double power = (DRIVE_KP * error) + (DRIVE_KI * integral) - (DRIVE_KD * derivative);
+    if (power > DRIVE_MAX_POWER) power = DRIVE_MAX_POWER;
+    if (power < -DRIVE_MAX_POWER) power = -DRIVE_MAX_POWER;
+    if (fabs(power) < 3.0) power = 0;
 
-    // Power capping
-    if (power > MAX_DRIVE_POWER) power = MAX_DRIVE_POWER;
-    if (power < -MAX_DRIVE_POWER) power = -MAX_DRIVE_POWER;
-
-    // Minimum power deadband to prevent motor stalling/humming
-    if (fabs(power) < 3.0) {
-      power = 0;
-    }
-
-    filteredPower += POWER_FILTER_ALPHA * (power - filteredPower);
+    filteredPower += DRIVE_POWER_FILTER_ALPHA * (power - filteredPower);
     power = filteredPower;
 
-    // Microtip protection: tighten the acceleration limit while the bot is tilted
     double tilt = tiltDeg();
     if (tilt > drivePeakTiltDeg) drivePeakTiltDeg = tilt;
     double slewScale = 1.0;
@@ -707,7 +540,7 @@ void drivePIDAtHeading(double inches, double targetHeadingDeg, int timeoutMs = 2
       double t = fmin(1.0, (tilt - TIP_START_DEG) / (TIP_FULL_DEG - TIP_START_DEG));
       slewScale = 1.0 - (1.0 - TIP_MIN_SLEW_SCALE) * t;
     }
-    double maxPowerChange = MAX_POWER_CHANGE * slewScale;
+    double maxPowerChange = DRIVE_MAX_POWER_CHANGE * slewScale;
 
     double powerChange = power - previousPower;
     if (powerChange > maxPowerChange) {
@@ -715,36 +548,28 @@ void drivePIDAtHeading(double inches, double targetHeadingDeg, int timeoutMs = 2
     } else if (powerChange < -maxPowerChange) {
       power = previousPower - maxPowerChange;
     }
+    if (inches > 0 && power < 0) power = 0;
+    if (inches < 0 && power > 0) power = 0;
     previousPower = power;
 
-    // Heading PID (runs the whole move, including at low power and at the start/end)
-    double headingRate = (heading - prevHeading) / (LOOP_TIME / 1000.0); // degrees per second
-    prevHeading = heading;
-    headingDerivative += 0.3 * (headingRate - headingDerivative);
-
-    if (fabs(headingError) < HEADING_INTEGRAL_WINDOW_DEG) {
-      headingIntegral += headingError * (LOOP_TIME / 1000.0);
+    double leftPower = power;
+    double rightPower = power;
+    if (inertialSensor.installed()) {
+      double yawRateDps = inertialSensor.gyroRate(zaxis, dps);
+      if (fabs(yawRateDps) > YAW_RATE_THRESHOLD_DPS) {
+        double boost = fmin(LAGGING_SIDE_BOOST_POWER, fabs(power) * 0.1);
+        bool rightSideIsLagging = yawRateDps * power > 0;
+        if (rightSideIsLagging) {
+          rightPower += (power >= 0 ? 1.0 : -1.0) * boost;
+        } else {
+          leftPower += (power >= 0 ? 1.0 : -1.0) * boost;
+        }
+      }
     }
-    double maxHeadingIntegral = HEADING_MAX_INTEGRAL_POWER / HEADING_KP;
-    if (headingIntegral > maxHeadingIntegral) headingIntegral = maxHeadingIntegral;
-    if (headingIntegral < -maxHeadingIntegral) headingIntegral = -maxHeadingIntegral;
-
-    double headingCorrection = (HEADING_KP * headingError) +
-                               (HEADING_KI * headingIntegral) -
-                               (HEADING_KD * headingDerivative);
-    if (headingCorrection > HEADING_MAX_CORRECTION) headingCorrection = HEADING_MAX_CORRECTION;
-    if (headingCorrection < -HEADING_MAX_CORRECTION) headingCorrection = -HEADING_MAX_CORRECTION;
-    headingCorrection += DRIVE_TRIM;
-
-    // Fade the correction out as power drops so it can't spin the bot at the end
-    headingCorrection *= fmin(1.0, fabs(power) / 20.0);
-
-    double leftPower = power + headingCorrection;
-    double rightPower = power - headingCorrection;
-    if (leftPower > 100) leftPower = 100;
-    if (leftPower < -100) leftPower = -100;
-    if (rightPower > 100) rightPower = 100;
-    if (rightPower < -100) rightPower = -100;
+    if (leftPower > DRIVE_MAX_POWER) leftPower = DRIVE_MAX_POWER;
+    if (leftPower < -DRIVE_MAX_POWER) leftPower = -DRIVE_MAX_POWER;
+    if (rightPower > DRIVE_MAX_POWER) rightPower = DRIVE_MAX_POWER;
+    if (rightPower < -DRIVE_MAX_POWER) rightPower = -DRIVE_MAX_POWER;
 
     leftDrive.spin(fwd, leftPower, pct);
     rightDrive.spin(fwd, rightPower, pct);
@@ -753,101 +578,12 @@ void drivePIDAtHeading(double inches, double targetHeadingDeg, int timeoutMs = 2
     elapsed += LOOP_TIME;
   }
 
-  // Record how the move ended (see showDriveStats)
-  driveTimedOut = (settledCount < 5);
+  driveTimedOut = !reachedTarget;
   driveFinalHeadingErrorDeg = wrapDeg(targetHeadingDeg - getHeading());
   driveFinalErrorIn = inches - ((getX() - startX) * dirX + (getY() - startY) * dirY);
 
-  // Passive electromagnetic braking mode (protects motors from thermal strain)
   leftDrive.stop(brake);
   rightDrive.stop(brake);
-}
-
-// Drive straight along the heading the bot is currently facing
-void drivePID(double inches, int timeoutMs = 2000) {
-  drivePIDAtHeading(inches, getHeading(), timeoutMs);
-}
-
-// Turn in place to an absolute field heading (degrees, 0 = +Y, clockwise positive).
-// Always takes the shortest direction.
-void turnToHeading(double targetHeadingDeg, int timeoutMs = 1500) {
-  // Tune these (power percent per degree of error)
-  double kP = 0.8;
-  double kI = 0.01;
-  double kD = 0.06;
-
-  const double MAX_TURN_POWER = 70.0;
-  const double MIN_TURN_POWER = 4.0;    // overcomes static friction when close
-  const double SETTLE_TOL_DEG = 1.0;
-  const int SETTLE_LOOPS = 5;           // 50ms inside tolerance
-  const int LOOP_TIME = 10;             // ms
-
-  double integral = 0;
-  double derivative = 0;
-  double prevError = wrapDeg(targetHeadingDeg - getHeading());
-  int elapsed = 0;
-  int settledCount = 0;
-
-  while (elapsed < timeoutMs) {
-    double error = wrapDeg(targetHeadingDeg - getHeading());
-
-    if (fabs(error) < SETTLE_TOL_DEG) {
-      settledCount++;
-    } else {
-      settledCount = 0;
-    }
-    if (settledCount >= SETTLE_LOOPS) break;
-
-    // Integral only near the target, reset when crossing it
-    if (fabs(error) < 10.0) {
-      integral += error;
-    } else {
-      integral = 0;
-    }
-    if ((error > 0) != (prevError > 0)) integral = 0;
-    if (integral > 1000) integral = 1000;
-    if (integral < -1000) integral = -1000;
-
-    // Filtered derivative in degrees per second
-    double rawDerivative = (error - prevError) / (LOOP_TIME / 1000.0);
-    derivative += 0.3 * (rawDerivative - derivative);
-    prevError = error;
-
-    double power = (kP * error) + (kI * integral) + (kD * derivative);
-
-    if (power > MAX_TURN_POWER) power = MAX_TURN_POWER;
-    if (power < -MAX_TURN_POWER) power = -MAX_TURN_POWER;
-    if (fabs(error) > 1.5 && fabs(power) < MIN_TURN_POWER) {
-      power = (power >= 0) ? MIN_TURN_POWER : -MIN_TURN_POWER;
-    }
-
-    // Positive error = need to turn clockwise: left forward, right backward
-    leftDrive.spin(fwd, power, pct);
-    rightDrive.spin(fwd, -power, pct);
-
-    wait(LOOP_TIME, msec);
-    elapsed += LOOP_TIME;
-  }
-
-  leftDrive.stop(brake);
-  rightDrive.stop(brake);
-  wait(50, msec);
-}
-
-// Turn in place so the robot faces the field point (x, y) in inches.
-// reverse = true points the back of the robot at the point instead.
-void turnToPoint(double x, double y, bool reverse = false, int timeoutMs = 1500) {
-  double dx = x - getX();
-  double dy = y - getY();
-
-  // Too close to the point for a meaningful direction
-  if (sqrt(dx * dx + dy * dy) < 0.5) return;
-
-  // atan2(dx, dy): 0 = +Y, clockwise positive (matches the pose heading)
-  double targetDeg = atan2(dx, dy) * 180.0 / M_PI;
-  if (reverse) targetDeg += 180.0;
-
-  turnToHeading(targetDeg, timeoutMs);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -860,6 +596,8 @@ void pre_auton(void) {
   while (inertialSensor.isCalibrating()) {
     wait(20, msec);
   }
+
+  toggleClaw(); // Start with the claw closed
 
   // Remember what "level" reads so tilt can be measured during moves
   captureLevel();
@@ -874,9 +612,7 @@ void pre_auton(void) {
 
 void autonomous(void) {
   // Tuning
-  // drivePID(12);
-  // turnToHeading(90);
-  // turnToPoint(24, 24);
+  drivePID(-24);
 
   // Toggle auton
   // startClaw(false);
