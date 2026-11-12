@@ -80,8 +80,8 @@ motor_group rightDrive = motor_group(rightMotor1, rightMotor2, rightMotor3);
  */
 
 const double ODOM_WHEEL_CIRC_IN = ODOM_WHEEL_DIAM_IN * M_PI;
-// Empirical correction: a commanded 24 in move measured about 27 in physically.
-const double ODOM_DISTANCE_SCALE = 27.0 / 24.0;
+// Latest 24 in command averaged 23.875 in across the drive sides.
+const double ODOM_DISTANCE_SCALE = 1.086328125 * (24.0 / 23.875);
 const double ODOM_IN_PER_DEG = (ODOM_WHEEL_CIRC_IN / 360.0) * ODOM_DISTANCE_SCALE;
 
 // Pose shared between the odometry task and everything else
@@ -413,8 +413,8 @@ const double DRIVE_MAX_POWER = 70.0;
 const double DRIVE_MAX_POWER_CHANGE = 1.0;
 const double DRIVE_POWER_FILTER_ALPHA = 0.25;
 
-const double YAW_RATE_THRESHOLD_DPS = 8.0;
-const double LAGGING_SIDE_BOOST_POWER = 0.5;
+const double TIP_RATE_THRESHOLD_DPS = 8.0;
+const double TIP_SIDE_BOOST_POWER = 2.0;
 
 const double TIP_START_DEG = 1.5;
 const double TIP_FULL_DEG = 5.0;
@@ -555,11 +555,12 @@ void drivePID(double inches, int timeoutMs = 3500) {
     double leftPower = power;
     double rightPower = power;
     if (inertialSensor.installed()) {
+      // Positive Z rate is clockwise. Boost the turning-side group; reverse
+      // travel naturally swaps sides because power changes sign.
       double yawRateDps = inertialSensor.gyroRate(zaxis, dps);
-      if (fabs(yawRateDps) > YAW_RATE_THRESHOLD_DPS) {
-        double boost = fmin(LAGGING_SIDE_BOOST_POWER, fabs(power) * 0.1);
-        bool rightSideIsLagging = yawRateDps * power > 0;
-        if (rightSideIsLagging) {
+      if (fabs(yawRateDps) > TIP_RATE_THRESHOLD_DPS) {
+        double boost = fmin(TIP_SIDE_BOOST_POWER, fabs(power) * 0.25);
+        if (yawRateDps * power > 0) {
           rightPower += (power >= 0 ? 1.0 : -1.0) * boost;
         } else {
           leftPower += (power >= 0 ? 1.0 : -1.0) * boost;
@@ -612,7 +613,7 @@ void pre_auton(void) {
 
 void autonomous(void) {
   // Tuning
-  drivePID(-24);
+  drivePID(24);
 
   // Toggle auton
   // startClaw(false);
