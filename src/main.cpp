@@ -93,9 +93,14 @@ double odomHeadingDeg = 0;   // inertial rotation (continuous, not wrapped)
 double prevOdomDeg = 0;
 double prevHeadingDeg = 0;
 
+// Heading the robot is SUPPOSED to be facing. turnClockwise() adds to it and
+// drivePID() holds it, so a turn that lands 1 deg off is not carried forward.
+double commandedHeadingDeg = 0;
+
 // Set the robot pose (x, y in inches, heading in degrees)
 void setPose(double x, double y, double headingDeg) {
   odomMutex.lock();
+  commandedHeadingDeg = headingDeg;
   inertialSensor.setRotation(headingDeg, degrees);
   odomX = x;
   odomY = y;
@@ -125,6 +130,15 @@ double getHeading() {
   double v = odomHeadingDeg;
   odomMutex.unlock();
   return v;
+}
+
+// If the robot was knocked far from the commanded heading (collision, being
+// pushed), trust where it actually is instead of fighting back to the old heading.
+const double HEADING_RESYNC_DEG = 15.0;
+void syncCommandedHeading() {
+  if (fabs(commandedHeadingDeg - getHeading()) > HEADING_RESYNC_DEG) {
+    commandedHeadingDeg = getHeading();
+  }
 }
 
 // Background task: integrates tracking wheel + inertial data into a pose
@@ -347,7 +361,11 @@ void turnClockwise(int deg) {
   const double SETTLE_TOL_DEG = 1.0;
   const int SETTLE_LOOPS = 5;
 
-  const double targetHeading = inertialSensor.rotation(degrees) + deg;
+  // Build on the commanded heading (not the raw current one) so turn errors
+  // do not accumulate across a multi-turn auton.
+  syncCommandedHeading();
+  const double targetHeading = commandedHeadingDeg + deg;
+  commandedHeadingDeg = targetHeading;
   double previousHeading = inertialSensor.rotation(degrees);
   double integral = 0;
   double filteredRate = 0;
@@ -413,6 +431,19 @@ const double DRIVE_MAX_POWER = 70.0;
 const double DRIVE_MAX_POWER_CHANGE = 1.0;
 const double DRIVE_POWER_FILTER_ALPHA = 0.25;
 
+// Heading hold (runs the whole move). Positive heading error = robot must turn
+// clockwise = left side gets more power, right side less.
+const double HEADING_KP = 1.0;
+const double HEADING_KI = 0.3;
+const double HEADING_KD = 0.05;
+const double HEADING_MAX_CORRECTION = 15.0;
+const double HEADING_MAX_INTEGRAL_POWER = 5.0;
+const double HEADING_INTEGRAL_WINDOW_DEG = 8.0;
+const double HEADING_FADE_POWER = 10.0;  // correction fades below this drive power
+// Odometry cross-track steering: degrees of aim offset per inch off the line.
+const double CROSS_TRACK_DEG_PER_IN = 1.0;
+const double CROSS_TRACK_MAX_DEG = 5.0;
+
 const double TIP_RATE_THRESHOLD_DPS = 8.0;
 const double TIP_SIDE_BOOST_POWER = 2.0;
 
@@ -472,10 +503,12 @@ void drivePID(double inches, int timeoutMs = 3500) {
   int settledCount = 0;
   double previousPower = 0;
   double filteredPower = 0;
+  double headingIntegral = 0;
 
   double startX = getX();
   double startY = getY();
-  double targetHeadingDeg = getHeading();
+  syncCommandedHeading();
+  double targetHeadingDeg = commandedHeadingDeg; // includes all turnClockwise() turns so far
   double targetHeadingRad = targetHeadingDeg * M_PI / 180.0;
   double dirX = sin(targetHeadingRad);
   double dirY = cos(targetHeadingRad);
@@ -554,10 +587,39 @@ void drivePID(double inches, int timeoutMs = 3500) {
 
     double leftPower = power;
     double rightPower = power;
+
+    // Z-axis yaw rate: positive = turning clockwise.
+    double yawRateDps = inertialSensor.installed() ? inertialSensor.gyroRate(zaxis, dps) : 0.0;
+
+    // Odometry cross-track error: how far right of the intended line the robot is.
+    double travelSign = inches > 0 ? 1.0 : -1.0;
+    double crossTrackIn = (getX() - startX) * dirY - (getY() - startY) * dirX;
+    double steerDeg = -travelSign * CROSS_TRACK_DEG_PER_IN * crossTrackIn;
+    if (steerDeg > CROSS_TRACK_MAX_DEG) steerDeg = CROSS_TRACK_MAX_DEG;
+    if (steerDeg < -CROSS_TRACK_MAX_DEG) steerDeg = -CROSS_TRACK_MAX_DEG;
+
+    // Heading PID toward the commanded heading (plus the small cross-track aim).
+    double aimError = wrapDeg(targetHeadingDeg + steerDeg - heading);
+    if (fabs(aimError) < HEADING_INTEGRAL_WINDOW_DEG) {
+      headingIntegral += aimError * (LOOP_TIME / 1000.0);
+    } else {
+      headingIntegral = 0;
+    }
+    double maxIntegral = HEADING_KI > 0 ? HEADING_MAX_INTEGRAL_POWER / HEADING_KI : 0;
+    if (headingIntegral > maxIntegral) headingIntegral = maxIntegral;
+    if (headingIntegral < -maxIntegral) headingIntegral = -maxIntegral;
+
+    double correction = (HEADING_KP * aimError) + (HEADING_KI * headingIntegral) - (HEADING_KD * yawRateDps);
+    if (correction > HEADING_MAX_CORRECTION) correction = HEADING_MAX_CORRECTION;
+    if (correction < -HEADING_MAX_CORRECTION) correction = -HEADING_MAX_CORRECTION;
+    correction *= fmin(1.0, fabs(power) / HEADING_FADE_POWER);
+    leftPower += correction;
+    rightPower -= correction;
+
     if (inertialSensor.installed()) {
-      // Positive Z rate is clockwise. Boost the turning-side group; reverse
+      // Fast-reaction boost on top of the PID: Z rate clockwise (positive) boosts
+      // the RIGHT side, counterclockwise (negative) boosts the LEFT side. Reverse
       // travel naturally swaps sides because power changes sign.
-      double yawRateDps = inertialSensor.gyroRate(zaxis, dps);
       if (fabs(yawRateDps) > TIP_RATE_THRESHOLD_DPS) {
         double boost = fmin(TIP_SIDE_BOOST_POWER, fabs(power) * 0.25);
         if (yawRateDps * power > 0) {
