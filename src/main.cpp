@@ -24,7 +24,7 @@ controller Controller1 = controller(primary);
 const double ODOM_WHEEL_DIAM_IN = 2.0;          // tracking wheel diameter (inches)
 
 // Single tracking wheel (ACTIVE)
-const double ODOM_OFFSET_FROM_CENTER_IN = -5.0; // MEASURE. Signed: + = wheel is RIGHT of bot center, - = LEFT
+const double ODOM_OFFSET_FROM_CENTER_IN = 0; // MEASURE. Signed: + = wheel is RIGHT of bot center, - = LEFT
 const bool ODOM_REVERSED = true;               // flip if the sensor reads negative when driving forward
 
 // Two tracking wheels (DISABLED)
@@ -34,7 +34,7 @@ const bool ODOM_REVERSED = true;               // flip if the sensor reads negat
 
 // Misc Motors
 motor toggleMotor = motor(PORT10, false);
-digital_out clawPneumatic = digital_out(Brain.ThreeWirePort.A);
+digital_out clawPneumatic = digital_out(Brain.ThreeWirePort.H);
 bool clawPneumaticOpen = false;
 
 // Sensors
@@ -304,7 +304,7 @@ void DR4B(bool up, bool down) {
   } else if (down && !up) {
     DR4BMotors.spin(reverse, 100, percent);
   } else {
-    DR4BMotors.stop(hold);
+    DR4BMotors.stop(coast);
   }
 }
 
