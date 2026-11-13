@@ -300,11 +300,11 @@ void toggleClaw() {
 // DR4B
 void DR4B(bool up, bool down) {
   if (up && !down) {
-    DR4BMotors.spin(forward, 100, percent);
+    DR4BMotors.spin(forward, 60, percent);
   } else if (down && !up) {
-    DR4BMotors.spin(reverse, 100, percent);
+    DR4BMotors.spin(reverse, 60, percent);
   } else {
-    DR4BMotors.stop(coast);
+    DR4BMotors.stop(hold);
   }
 }
 
