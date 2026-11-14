@@ -24,7 +24,7 @@ controller Controller1 = controller(primary);
 const double ODOM_WHEEL_DIAM_IN = 2.0;          // tracking wheel diameter (inches)
 
 // Single tracking wheel (ACTIVE)
-const double ODOM_OFFSET_FROM_CENTER_IN = 0; // MEASURE. Signed: + = wheel is RIGHT of bot center, - = LEFT
+const double ODOM_OFFSET_FROM_CENTER_IN = 0.25; // MEASURE. Signed: + = wheel is RIGHT of bot center, - = LEFT
 const bool ODOM_REVERSED = true;               // flip if the sensor reads negative when driving forward
 
 // Two tracking wheels (DISABLED)
@@ -33,7 +33,7 @@ const bool ODOM_REVERSED = true;               // flip if the sensor reads negat
 // const bool RIGHT_ODOM_REVERSED = false;      // flip if the sensor reads negative when driving forward
 
 // Misc Motors
-motor toggleMotor = motor(PORT10, false);
+motor toggleMotor = motor(PORT18, true); // 5.5W
 digital_out clawPneumatic = digital_out(Brain.ThreeWirePort.H);
 bool clawPneumaticOpen = false;
 
@@ -80,8 +80,8 @@ motor_group rightDrive = motor_group(rightMotor1, rightMotor2, rightMotor3);
  */
 
 const double ODOM_WHEEL_CIRC_IN = ODOM_WHEEL_DIAM_IN * M_PI;
-// Latest 24 in command averaged 23.875 in across the drive sides.
-const double ODOM_DISTANCE_SCALE = 1.086328125 * (24.0 / 23.875);
+// The latest 24 in command traveled 24.75 in; raise scale so odometry stops sooner.
+const double ODOM_DISTANCE_SCALE = 1.062239884;
 const double ODOM_IN_PER_DEG = (ODOM_WHEEL_CIRC_IN / 360.0) * ODOM_DISTANCE_SCALE;
 
 // Pose shared between the odometry task and everything else
@@ -300,11 +300,19 @@ void toggleClaw() {
 // DR4B
 void DR4B(bool up, bool down) {
   if (up && !down) {
-    DR4BMotors.spin(forward, 60, percent);
+    DR4BMotors.spin(forward, 40, percent);
   } else if (down && !up) {
-    DR4BMotors.spin(reverse, 60, percent);
+    DR4BMotors.spin(reverse, 40, percent);
   } else {
     DR4BMotors.stop(hold);
+  }
+}
+
+void spinToggle(bool active) {
+  if (active) {
+    toggleMotor.spin(forward, 70, percent);
+  } else {
+    toggleMotor.stop(coast);
   }
 }
 
@@ -322,13 +330,30 @@ void DR4BFor(direction d, int durationMs) {
   DR4B(false, false);
 }
 
+void spinToggleFor(bool active, int durationMs) {
+  if (active) {
+    toggleMotor.spin(forward, 100, percent);
+  } else {
+    toggleMotor.stop(coast);
+  }
+  wait(durationMs, msec);
+  toggleMotor.stop(coast);
+}
+
 // Arcade drive function
 void arcadeDrive() {
-  int throttle = 0.7*Controller1.Axis3.position();
-  int turn = 0.7*Controller1.Axis1.position();
+  int throttle = Controller1.Axis3.position();
+  int turn = Controller1.Axis1.position();
 
-  int leftPower = throttle - turn;
-  int rightPower = throttle + turn;
+  if (throttle > -5 && throttle < 5) throttle = 0;
+  if (turn > -5 && turn < 5) turn = 0;
+
+  throttle = static_cast<int>(0.7 * throttle);
+  turn = static_cast<int>(0.7 * turn);
+
+  // Positive turn input should turn clockwise, matching turnClockwise().
+  int leftPower = throttle + turn;
+  int rightPower = throttle - turn;
 
   // Limit the calculated values to the motor's valid range
   if (leftPower > 100)
@@ -424,28 +449,25 @@ double wrapDeg(double a) {
 // ---- DRIVE-STRAIGHT TUNING ----
 // Drive straight while holding the current heading. This keeps the drive system
 // separate from the turning system instead of targeting a specific absolute heading.
-const double DRIVE_KP = 0.09;
-const double DRIVE_KI = 0.0015;
-const double DRIVE_KD = 0.001;
+const double DRIVE_KP = 0.12;
+const double DRIVE_KI = 0.02;
+const double DRIVE_KD = 0.003;
 const double DRIVE_MAX_POWER = 70.0;
 const double DRIVE_MAX_POWER_CHANGE = 1.0;
 const double DRIVE_POWER_FILTER_ALPHA = 0.25;
 
 // Heading hold (runs the whole move). Positive heading error = robot must turn
 // clockwise = left side gets more power, right side less.
-const double HEADING_KP = 1.0;
-const double HEADING_KI = 0.3;
-const double HEADING_KD = 0.05;
-const double HEADING_MAX_CORRECTION = 15.0;
-const double HEADING_MAX_INTEGRAL_POWER = 5.0;
+const double HEADING_KP = 0.3;
+const double HEADING_KI = 0.04;
+const double HEADING_KD = 0.03;
+const double HEADING_MAX_CORRECTION = 6.0;
+const double HEADING_MAX_INTEGRAL_POWER = 1.2;
 const double HEADING_INTEGRAL_WINDOW_DEG = 8.0;
-const double HEADING_FADE_POWER = 10.0;  // correction fades below this drive power
-// Odometry cross-track steering: degrees of aim offset per inch off the line.
-const double CROSS_TRACK_DEG_PER_IN = 1.0;
-const double CROSS_TRACK_MAX_DEG = 5.0;
+const double HEADING_FADE_POWER = 7.0;  // correction fades below this drive power
 
 const double TIP_RATE_THRESHOLD_DPS = 8.0;
-const double TIP_SIDE_BOOST_POWER = 2.0;
+const double TIP_SIDE_BOOST_POWER = 0.8;
 
 const double TIP_START_DEG = 1.5;
 const double TIP_FULL_DEG = 5.0;
@@ -507,8 +529,7 @@ void drivePID(double inches, int timeoutMs = 3500) {
 
   double startX = getX();
   double startY = getY();
-  syncCommandedHeading();
-  double targetHeadingDeg = commandedHeadingDeg; // includes all turnClockwise() turns so far
+  double targetHeadingDeg = getHeading();
   double targetHeadingRad = targetHeadingDeg * M_PI / 180.0;
   double dirX = sin(targetHeadingRad);
   double dirY = cos(targetHeadingRad);
@@ -591,15 +612,8 @@ void drivePID(double inches, int timeoutMs = 3500) {
     // Z-axis yaw rate: positive = turning clockwise.
     double yawRateDps = inertialSensor.installed() ? inertialSensor.gyroRate(zaxis, dps) : 0.0;
 
-    // Odometry cross-track error: how far right of the intended line the robot is.
-    double travelSign = inches > 0 ? 1.0 : -1.0;
-    double crossTrackIn = (getX() - startX) * dirY - (getY() - startY) * dirX;
-    double steerDeg = -travelSign * CROSS_TRACK_DEG_PER_IN * crossTrackIn;
-    if (steerDeg > CROSS_TRACK_MAX_DEG) steerDeg = CROSS_TRACK_MAX_DEG;
-    if (steerDeg < -CROSS_TRACK_MAX_DEG) steerDeg = -CROSS_TRACK_MAX_DEG;
-
-    // Heading PID toward the commanded heading (plus the small cross-track aim).
-    double aimError = wrapDeg(targetHeadingDeg + steerDeg - heading);
+    // IMU holds the heading captured at the start; odometry is used for distance only.
+    double aimError = wrapDeg(targetHeadingDeg - heading);
     if (fabs(aimError) < HEADING_INTEGRAL_WINDOW_DEG) {
       headingIntegral += aimError * (LOOP_TIME / 1000.0);
     } else {
@@ -724,6 +738,7 @@ void usercontrol(void) {
 
     arcadeDrive();
     DR4B(Controller1.ButtonR1.pressing(), Controller1.ButtonR2.pressing());
+    spinToggle(Controller1.ButtonL1.pressing());
     wait(20, msec);
   }
 }
