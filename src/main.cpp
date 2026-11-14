@@ -80,8 +80,8 @@ motor_group rightDrive = motor_group(rightMotor1, rightMotor2, rightMotor3);
  */
 
 const double ODOM_WHEEL_CIRC_IN = ODOM_WHEEL_DIAM_IN * M_PI;
-// The latest 24 in command traveled 24.75 in; raise scale so odometry stops sooner.
-const double ODOM_DISTANCE_SCALE = 1.062239884;
+// The latest 24 in command traveled 24.25 in; raise scale so odometry stops sooner.
+const double ODOM_DISTANCE_SCALE = 1.073304883;
 const double ODOM_IN_PER_DEG = (ODOM_WHEEL_CIRC_IN / 360.0) * ODOM_DISTANCE_SCALE;
 
 // Pose shared between the odometry task and everything else
@@ -332,7 +332,7 @@ void DR4BFor(direction d, int durationMs) {
 
 void spinToggleFor(bool active, int durationMs) {
   if (active) {
-    toggleMotor.spin(forward, 100, percent);
+    toggleMotor.spin(forward, 70, percent);
   } else {
     toggleMotor.stop(coast);
   }
@@ -449,8 +449,8 @@ double wrapDeg(double a) {
 // ---- DRIVE-STRAIGHT TUNING ----
 // Drive straight while holding the current heading. This keeps the drive system
 // separate from the turning system instead of targeting a specific absolute heading.
-const double DRIVE_KP = 0.12;
-const double DRIVE_KI = 0.02;
+const double DRIVE_KP = 0.14;
+const double DRIVE_KI = 0;
 const double DRIVE_KD = 0.003;
 const double DRIVE_MAX_POWER = 70.0;
 const double DRIVE_MAX_POWER_CHANGE = 1.0;
@@ -513,6 +513,7 @@ void drivePID(double inches, int timeoutMs = 3500) {
 
   const double wheelCircumference = 2.75 * M_PI;
   const double motorDegPerInch = 1.09 * (360.0 / wheelCircumference);
+  const double DISTANCE_TOLERANCE_IN = 0.1;
   double targetMotorDeg = inches * motorDegPerInch;
 
   double error = 0;
@@ -557,12 +558,12 @@ void drivePID(double inches, int timeoutMs = 3500) {
       break;
     }
 
-    if (fabs(error) < 2.0) {
+    if (fabs(error) < DISTANCE_TOLERANCE_IN * motorDegPerInch) {
       settledCount++;
     } else {
       settledCount = 0;
     }
-    if (settledCount >= 5) {
+    if (settledCount >= 3) {
       reachedTarget = true;
       break;
     }
@@ -674,8 +675,6 @@ void pre_auton(void) {
     wait(20, msec);
   }
 
-  toggleClaw(); // Start with the claw closed
-
   // Remember what "level" reads so tilt can be measured during moves
   captureLevel();
 
@@ -689,38 +688,54 @@ void pre_auton(void) {
 
 void autonomous(void) {
   // Tuning
-  drivePID(24);
+  // drivePID(24);
 
-  // Toggle auton
-  // startClaw(false);
-  // drivePID(10);
-  // clawLiftFor(true, false, 425);
-  // leftDrive.spin (reverse, 100, percent);
-  // rightDrive.spin(reverse, 100, percent);
-  // wait(340, msec);
-  // leftDrive.stop(coast);
-  // rightDrive.stop(coast);
-  // drivePID(10);
-  // stopClaw();
+  // Toggle Auton
+  // spinToggleFor(true, 800);
+  // drivePID(-0.6);
+  // drivePID(4);
 
-  //Side auton
-  // startClaw(true);
-  // drivePID(8);
-  // clawLiftFor(true, false, 475);
-  // leftDrive.spin(reverse, 100, percent);
-  // rightDrive.spin(reverse, 100, percent);
-  // wait(300, msec);
-  // leftDrive.stop(coast);
-  // rightDrive.stop(coast);
-  // drivePID(11);
-  // clawLiftFor(false, true, 230);
-  // turnClockwise(90);
-  // drivePID(-6);
-  // stopClaw();
-  // startClaw(false);
-  // wait(200, msec);
-  // stopClaw();
-  // wait(200, msec);
+  // Front Auton (Preload pin)
+  // spinToggleFor(true, 800);
+  // drivePID(-0.6); // align with field wall
+  // drivePID(4);
+  // turnClockwise(62.5);
+  // DR4BFor(UP, 500);
+  // drivePID(19.5);
+  // drivePID(-3.5);
+  // DR4BFor(DOWN, 500);
+  // toggleClaw();
+
+  // Front Auton (Middle Diagonal Cup/Pin)
+  spinToggleFor(true, 900);
+  drivePID(-0.1); // align with field wall
+  drivePID(4);
+  turnClockwise(62.5);
+  DR4BFor(UP, 500);
+  drivePID(20);
+  drivePID(-4);
+  DR4BFor(DOWN, 500);
+  toggleClaw();
+  DR4BFor(UP, 500);
+  drivePID(-6.5);
+  DR4BFor(DOWN, 500);
+  turnClockwise(-33);
+  drivePID(23.5);
+  toggleClaw();
+
+  // Side Auton (Preload pin)
+  // spinToggleFor(true, 800);
+  // drivePID(-0.6); // align with field wall
+  // drivePID(4);
+  // turnClockwise(-62.5);
+  // DR4BFor(UP, 500);
+  // drivePID(19.5);
+  // drivePID(-3.5);
+  // DR4BFor(DOWN, 500);
+  // toggleClaw();
+
+  // Side Auton (Middle Diagonal Cup/Pin)
+
 }
 
 /*---------------------------------------------------------------------------*/
